@@ -1,0 +1,35 @@
+# Which match(es) the reports are built for. No secrets — safe to commit.
+# Any value can be overridden for one run with the matching PMR_* env var.
+#
+#   python3 run.py --list        every fixture the account can see
+#   python3 run.py --dry-run     decide what to build, touch nothing
+#   python3 run.py               pull anything new or revised, rebuild
+
+[match]
+team       = "Leyton Orient"        # the club the reports are written for
+home_venue = "Brisbane Road"
+
+# Fallback single-match settings, used by build_report.py on its own.
+id          = 270173
+opponent    = "Wigan Athletic"
+competition = "League One 26/27"
+matchday    = "2. Spieltag"
+venue_date  = "The Brick Community Stadium · Saturday 22 August 2026"
+opponent_colour = "#1D428A"
+cache       = "data"
+
+# When a match has fewer than 5 of the club's own games behind it, the summary
+# falls back to a competition-wide pool. This caps how much of it we pull.
+season_pool_limit = 150
+
+# One account covering league, cup, and (as of the Walsall EFL Cup tie)
+# opponents' own leagues even when Orient don't play in them.
+#   1465 League One 25/26  · 2117 League One 26/27
+#   1514 EFL Cup 25/26     · 2227 EFL Cup 26/27
+#   2120 League Two 26/27  (Walsall's league - discovered pulling their form)
+# If an iteration is not covered by the licence, run.py reports it and carries
+# on with the rest rather than failing.
+[[match.accounts]]
+name       = "club"
+env_prefix = "IMPECT"
+iterations = [1465, 2117, 1514, 2227, 2120]

@@ -1,0 +1,443 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Leyton Orient — Match Analysis</title>
+<style>
+  :root {
+    --bg: #171E29;
+    --panel: #1E2735;
+    --sidebar: #131924;
+    --ink: #FFFFFF;
+    --muted: #8B97A8;
+    --grid: #2E3949;
+    --team: #E4002B;
+    --good: #8FE388;
+    --bad: #FF2D2D;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: -apple-system, "Avenir Next", "Helvetica Neue", Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  .shell { display: flex; min-height: 100vh; }
+
+  .sidebar {
+    width: 250px;
+    flex: 0 0 250px;
+    background: var(--sidebar);
+    border-right: 1px solid var(--grid);
+    padding: 32px 18px;
+    position: sticky;
+    top: 0;
+    height: 100vh;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+  }
+  .sidebar .kicker {
+    color: var(--team);
+    font-weight: 700;
+    font-size: 11px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    margin: 0 10px 6px;
+  }
+  .sidebar .title {
+    font-size: 20px;
+    font-weight: 800;
+    letter-spacing: -0.01em;
+    margin: 0 10px 28px;
+  }
+  .navlist { list-style: none; margin: 0; padding: 0; flex: 1; }
+  .navlist li { margin-bottom: 3px; }
+  .navitem {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    text-align: left;
+    background: none;
+    border: none;
+    border-radius: 8px;
+    padding: 10px 10px;
+    color: var(--muted);
+    font-size: 13.5px;
+    font-weight: 600;
+    font-family: inherit;
+    cursor: pointer;
+    transition: background 0.12s ease, color 0.12s ease;
+  }
+  .navitem .dot {
+    width: 7px; height: 7px; border-radius: 50%;
+    background: var(--grid);
+    flex-shrink: 0;
+    transition: background 0.12s ease;
+  }
+  .navitem:hover { background: #1C2434; color: var(--ink); }
+  .navitem.active { background: var(--panel); color: var(--ink); }
+  .navitem.active .dot { background: var(--accent, var(--team)); }
+  .navitem .count {
+    margin-left: auto;
+    font-size: 10.5px;
+    font-weight: 600;
+    color: var(--muted);
+  }
+  .sidebar-note {
+    margin-top: 20px;
+    padding: 12px 12px;
+    background: #1B2432;
+    border: 1px solid var(--grid);
+    border-radius: 8px;
+    color: var(--muted);
+    font-size: 11.5px;
+    line-height: 1.6;
+  }
+
+  .content { flex: 1; min-width: 0; padding: 40px 44px 60px; }
+  .pane { display: none; }
+  .pane.active { display: block; }
+  .pane-head { margin-bottom: 22px; max-width: 760px; }
+  .pane-head h1 {
+    margin: 0 0 6px;
+    font-size: 26px;
+    font-weight: 800;
+    letter-spacing: -0.01em;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .pane-head h1 .count {
+    color: var(--muted);
+    font-weight: 600;
+    font-size: 13px;
+  }
+  .pane-head p {
+    margin: 0;
+    color: var(--muted);
+    font-size: 13.5px;
+    line-height: 1.55;
+  }
+
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+    gap: 14px;
+  }
+  a.card {
+    display: block;
+    background: var(--panel);
+    border: 1px solid var(--grid);
+    border-radius: 10px;
+    padding: 18px 18px 16px;
+    text-decoration: none;
+    color: var(--ink);
+    transition: border-color 0.15s ease, transform 0.15s ease;
+    position: relative;
+  }
+  a.card:hover {
+    border-color: var(--accent, var(--team));
+    transform: translateY(-2px);
+  }
+  a.card .bar {
+    position: absolute;
+    left: 0; top: 14px; bottom: 14px;
+    width: 3px;
+    border-radius: 2px;
+    background: var(--accent, var(--team));
+  }
+  a.card .opp {
+    font-size: 16px;
+    font-weight: 700;
+    margin: 0 0 6px 10px;
+  }
+  a.card .meta {
+    margin: 0 0 12px 10px;
+    color: var(--muted);
+    font-size: 12px;
+    line-height: 1.5;
+  }
+  a.card .open {
+    margin-left: 10px;
+    font-size: 11.5px;
+    font-weight: 700;
+    letter-spacing: 0.03em;
+    color: var(--accent, var(--team));
+    display: flex;
+    align-items: center;
+    gap: 5px;
+  }
+  a.card .open svg { width: 11px; height: 11px; }
+
+  .note {
+    margin-top: 24px;
+    padding: 14px 16px;
+    background: #1B2432;
+    border: 1px solid var(--grid);
+    border-radius: 8px;
+    color: var(--muted);
+    font-size: 12.5px;
+    line-height: 1.6;
+    max-width: 760px;
+  }
+
+  #season.pane { padding: 0; }
+  .frame-wrap {
+    border: 1px solid var(--grid);
+    border-radius: 12px;
+    overflow: hidden;
+    height: calc(100vh - 80px);
+  }
+  .frame-wrap iframe {
+    width: 100%;
+    height: 100%;
+    border: none;
+    display: block;
+    background: var(--bg);
+  }
+
+  @media (max-width: 820px) {
+    .shell { flex-direction: column; }
+    .sidebar {
+      width: 100%; flex: none; position: static; height: auto;
+      border-right: none; border-bottom: 1px solid var(--grid);
+      padding: 20px 16px;
+    }
+    .navlist { display: flex; flex-wrap: wrap; gap: 6px; }
+    .navlist li { margin-bottom: 0; }
+    .sidebar-note { display: none; }
+    .content { padding: 28px 20px 50px; }
+    .frame-wrap { height: 80vh; }
+  }
+</style>
+</head>
+<body>
+
+<div class="shell">
+
+  <nav class="sidebar">
+    <div class="kicker">Leyton Orient FC</div>
+    <div class="title">Match Analysis</div>
+    <ul class="navlist">
+      <li><button class="navitem active" data-target="season" style="--accent:#8FE388"><span class="dot"></span>Season Progress</button></li>
+      <li><button class="navitem" data-target="prematch" style="--accent:#E4002B"><span class="dot"></span>Pre-Match Analysis<span class="count">8</span></button></li>
+      <li><button class="navitem" data-target="postmatch" style="--accent:#2E86DE"><span class="dot"></span>Post-Match Reports<span class="count">9</span></button></li>
+      <li><button class="navitem" data-target="corners" style="--accent:#FDB913"><span class="dot"></span>Corner Analysis<span class="count">7</span></button></li>
+    </ul>
+    <div class="sidebar-note">
+      Burton Albion and Wycombe Wanderers post-match reports are left off this
+      dashboard by request. New features get their own row in this list.
+    </div>
+  </nav>
+
+  <main class="content">
+
+    <section id="season" class="pane active">
+      <div class="frame-wrap">
+        <iframe src="season-tracker.html" title="Season Tracker"></iframe>
+      </div>
+    </section>
+
+    <section id="prematch" class="pane">
+      <div class="pane-head">
+        <h1>Pre-Match Analysis <span class="count">8 reports</span></h1>
+        <p>Built from each opponent's recent league (and, where the sample needed it, cup) form.</p>
+      </div>
+      <div class="grid">
+        <a class="card" style="--accent:#4EB6E3" href="Pre-Match%20Analysis%20-%20Wycombe%20Wanderers.pdf" target="_blank">
+          <div class="bar"></div>
+          <div class="opp">Wycombe Wanderers</div>
+          <div class="meta">League One · home · Sat 12 Sep 2026 · last 5 league games each side</div>
+          <div class="open">OPEN PDF <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M7 17L17 7M17 7H8M17 7V16"/></svg></div>
+        </a>
+        <a class="card" style="--accent:#8E1F2F" href="Pre-Match%20Analysis%20-%20Bradford%20City.pdf" target="_blank">
+          <div class="bar"></div>
+          <div class="opp">Bradford City</div>
+          <div class="meta">EFL Cup · last 6 games each side (5 League One + 1 EFL Cup, both sides)</div>
+          <div class="open">OPEN PDF <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M7 17L17 7M17 7H8M17 7V16"/></svg></div>
+        </a>
+        <a class="card" style="--accent:#F76B1C" href="Pre-Match%20Analysis%20-%20Luton%20Town.pdf" target="_blank">
+          <div class="bar"></div>
+          <div class="opp">Luton Town</div>
+          <div class="meta">League One · last 5 games each side (4 League One + 1 EFL Cup, both sides)</div>
+          <div class="open">OPEN PDF <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M7 17L17 7M17 7H8M17 7V16"/></svg></div>
+        </a>
+        <a class="card" style="--accent:#8B1414" href="Pre-Match%20Analysis%20-%20FC%20Barnsley.pdf" target="_blank">
+          <div class="bar"></div>
+          <div class="opp">FC Barnsley</div>
+          <div class="meta">League One · last 4 games for them (2 League One + 2 EFL Cup), last 3 for us</div>
+          <div class="open">OPEN PDF <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M7 17L17 7M17 7H8M17 7V16"/></svg></div>
+        </a>
+        <a class="card" style="--accent:#7A1F2B" href="Pre-Match%20Analysis%20-%20FC%20Walsall.pdf" target="_blank">
+          <div class="bar"></div>
+          <div class="opp">FC Walsall</div>
+          <div class="meta">EFL Cup Round 2 · last 2 League Two games each side</div>
+          <div class="open">OPEN PDF <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M7 17L17 7M17 7H8M17 7V16"/></svg></div>
+        </a>
+        <a class="card" style="--accent:#1D428A" href="Pre-Match%20Analysis%20-%20Wigan%20Athletic.pdf" target="_blank">
+          <div class="bar"></div>
+          <div class="opp">Wigan Athletic</div>
+          <div class="meta">League One · from Wigan's most recent match</div>
+          <div class="open">OPEN PDF <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M7 17L17 7M17 7H8M17 7V16"/></svg></div>
+        </a>
+        <a class="card" style="--accent:#FDB913" href="Pre-Match%20Analysis%20-%20AFC%20Wimbledon.pdf" target="_blank">
+          <div class="bar"></div>
+          <div class="opp">AFC Wimbledon</div>
+          <div class="meta">League One · from Wimbledon's most recent match</div>
+          <div class="open">OPEN PDF <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M7 17L17 7M17 7H8M17 7V16"/></svg></div>
+        </a>
+        <a class="card" style="--accent:#2E86DE" href="Pre-Match%20Analysis%20-%20Sheffield%20Wednesday.pdf" target="_blank">
+          <div class="bar"></div>
+          <div class="opp">Sheffield Wednesday</div>
+          <div class="meta">EFL Cup · from Sheffield Wednesday's most recent match</div>
+          <div class="open">OPEN PDF <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M7 17L17 7M17 7H8M17 7V16"/></svg></div>
+        </a>
+      </div>
+      <div class="note">
+        FC Barnsley's report is the most current version of the template: a 4-vs-3
+        game, mixed League One / EFL Cup sample.
+      </div>
+    </section>
+
+    <section id="postmatch" class="pane">
+      <div class="pane-head">
+        <h1>Post-Match Reports <span class="count">8 reports + 1 excerpt</span></h1>
+        <p>Full debrief: team stats, set pieces, personnel, Performance Review, and Coach's Brief where one was built.</p>
+      </div>
+      <div class="grid">
+        <a class="card" style="--accent:#8E1F2F" href="Post%20Match%20Report%20-%20Leyton%20Orient%20v%20Bradford%20City%20%282026-09-08%29.pdf" target="_blank">
+          <div class="bar"></div>
+          <div class="opp">v Bradford City</div>
+          <div class="meta">EFL Cup · home · lost 1–3 · includes Coach's Brief</div>
+          <div class="open">OPEN PDF <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M7 17L17 7M17 7H8M17 7V16"/></svg></div>
+        </a>
+        <a class="card" style="--accent:#F76B1C" href="Post%20Match%20Report%20-%20Leyton%20Orient%20v%20Luton%20Town%20%282026-09-05%29.pdf" target="_blank">
+          <div class="bar"></div>
+          <div class="opp">v Luton Town</div>
+          <div class="meta">League One · away · drew 1–1 · Coach's Brief not built yet (notes pending)</div>
+          <div class="open">OPEN PDF <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M7 17L17 7M17 7H8M17 7V16"/></svg></div>
+        </a>
+        <a class="card" style="--accent:#E8B21E" href="Post%20Match%20Report%20-%20Leyton%20Orient%20v%20FC%20Bromley%20%282026-09-01%29.pdf" target="_blank">
+          <div class="bar"></div>
+          <div class="opp">v FC Bromley</div>
+          <div class="meta">League One · away · won 5–0 · includes Coach's Brief</div>
+          <div class="open">OPEN PDF <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M7 17L17 7M17 7H8M17 7V16"/></svg></div>
+        </a>
+        <a class="card" style="--accent:#8B1414" href="Post%20Match%20Report%20-%20Leyton%20Orient%20v%20FC%20Barnsley%20%282026-08-29%29.pdf" target="_blank">
+          <div class="bar"></div>
+          <div class="opp">v FC Barnsley</div>
+          <div class="meta">League One · home · lost 1–3 · Coach's Brief not built yet (notes pending)</div>
+          <div class="open">OPEN PDF <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M7 17L17 7M17 7H8M17 7V16"/></svg></div>
+        </a>
+        <a class="card" style="--accent:#7A1F2B" href="Post%20Match%20Report%20-%20Leyton%20Orient%20v%20FC%20Walsall%20%282026-08-25%29.pdf" target="_blank">
+          <div class="bar"></div>
+          <div class="opp">v FC Walsall</div>
+          <div class="meta">EFL Cup · away · drew 0–0 (won 6–5 on penalties) · Coach's Brief not built yet (notes pending)</div>
+          <div class="open">OPEN PDF <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M7 17L17 7M17 7H8M17 7V16"/></svg></div>
+        </a>
+        <a class="card" style="--accent:#1D428A" href="Post%20Match%20Report%20-%20Leyton%20Orient%20v%20Wigan%20Athletic.pdf" target="_blank">
+          <div class="bar"></div>
+          <div class="opp">v Wigan Athletic</div>
+          <div class="meta">League One · away · won 2–0</div>
+          <div class="open">OPEN PDF <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M7 17L17 7M17 7H8M17 7V16"/></svg></div>
+        </a>
+        <a class="card" style="--accent:#2E86DE" href="Post%20Match%20Report%20-%20Leyton%20Orient%20v%20Sheffield%20Wednesday.pdf" target="_blank">
+          <div class="bar"></div>
+          <div class="opp">v Sheffield Wednesday</div>
+          <div class="meta">League One · home · lost 1–2</div>
+          <div class="open">OPEN PDF <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M7 17L17 7M17 7H8M17 7V16"/></svg></div>
+        </a>
+        <a class="card" style="--accent:#FFDD00" href="Post%20Match%20Report%20-%20Leyton%20Orient%20v%20Oxford%20United.pdf" target="_blank">
+          <div class="bar"></div>
+          <div class="opp">v Oxford United</div>
+          <div class="meta">EFL Cup · home · won 2–0</div>
+          <div class="open">OPEN PDF <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M7 17L17 7M17 7H8M17 7V16"/></svg></div>
+        </a>
+        <a class="card" style="--accent:#5A6676" href="Post%20Match%20Report%20-%20Leyton%20Orient%20v%20Oxford%20United%20-%20CHANGES.pdf" target="_blank">
+          <div class="bar"></div>
+          <div class="opp">v Oxford United <span style="color:var(--muted); font-weight:600;">(excerpt)</span></div>
+          <div class="meta">Just the 3 pages that changed after review</div>
+          <div class="open">OPEN PDF <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M7 17L17 7M17 7H8M17 7V16"/></svg></div>
+        </a>
+      </div>
+    </section>
+
+    <section id="corners" class="pane">
+      <div class="pane-head">
+        <h1>Corner Analysis <span class="count">7 reports</span></h1>
+        <p>Set-piece routines for both teams — delivery, first contact, takers.</p>
+      </div>
+      <div class="grid">
+        <a class="card" style="--accent:#4EB6E3" href="Corner%20Report%20-%20Wycombe%20Wanderers.pdf" target="_blank">
+          <div class="bar"></div>
+          <div class="opp">Wycombe Wanderers</div>
+          <div class="meta">Same sample as the pre-match report — 5 league games each side</div>
+          <div class="open">OPEN PDF <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M7 17L17 7M17 7H8M17 7V16"/></svg></div>
+        </a>
+        <a class="card" style="--accent:#8E1F2F" href="Corner%20Report%20-%20Bradford%20City.pdf" target="_blank">
+          <div class="bar"></div>
+          <div class="opp">Bradford City</div>
+          <div class="meta">Same sample as the pre-match report — 6 games each side</div>
+          <div class="open">OPEN PDF <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M7 17L17 7M17 7H8M17 7V16"/></svg></div>
+        </a>
+        <a class="card" style="--accent:#F76B1C" href="Corner%20Report%20-%20Luton%20Town.pdf" target="_blank">
+          <div class="bar"></div>
+          <div class="opp">Luton Town</div>
+          <div class="meta">Same sample as the pre-match report — 5 games each side</div>
+          <div class="open">OPEN PDF <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M7 17L17 7M17 7H8M17 7V16"/></svg></div>
+        </a>
+        <a class="card" style="--accent:#8B1414" href="Corner%20Report%20-%20FC%20Barnsley.pdf" target="_blank">
+          <div class="bar"></div>
+          <div class="opp">FC Barnsley</div>
+          <div class="meta">Same sample as the pre-match report — 4 games for them, 3 for us</div>
+          <div class="open">OPEN PDF <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M7 17L17 7M17 7H8M17 7V16"/></svg></div>
+        </a>
+        <a class="card" style="--accent:#7A1F2B" href="Corner%20Report%20-%20FC%20Walsall.pdf" target="_blank">
+          <div class="bar"></div>
+          <div class="opp">FC Walsall</div>
+          <div class="meta">Last 2 league games each side</div>
+          <div class="open">OPEN PDF <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M7 17L17 7M17 7H8M17 7V16"/></svg></div>
+        </a>
+        <a class="card" style="--accent:#1D428A" href="Corner%20Report%20-%20Wigan%20Athletic.pdf" target="_blank">
+          <div class="bar"></div>
+          <div class="opp">Wigan Athletic</div>
+          <div class="meta">Single reference match (earlier template)</div>
+          <div class="open">OPEN PDF <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M7 17L17 7M17 7H8M17 7V16"/></svg></div>
+        </a>
+        <a class="card" style="--accent:#FDB913" href="Corner%20Report%20-%20AFC%20Wimbledon.pdf" target="_blank">
+          <div class="bar"></div>
+          <div class="opp">AFC Wimbledon</div>
+          <div class="meta">Single reference match (earlier template)</div>
+          <div class="open">OPEN PDF <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M7 17L17 7M17 7H8M17 7V16"/></svg></div>
+        </a>
+      </div>
+      <div class="note">
+        The Wigan Athletic and AFC Wimbledon reports predate the goal-at-top /
+        left-right / individual-first-contact redesign built for Walsall — worth
+        rebuilding on the current template when there's time. FC Barnsley's report
+        is on the current template, with flicked-on deliveries plotted at their
+        real location where Impect's data has one.
+      </div>
+    </section>
+
+  </main>
+</div>
+
+<script>
+  document.querySelectorAll('.navitem').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      document.querySelectorAll('.navitem').forEach(function (b) { b.classList.remove('active'); });
+      document.querySelectorAll('.pane').forEach(function (p) { p.classList.remove('active'); });
+      btn.classList.add('active');
+      document.getElementById(btn.dataset.target).classList.add('active');
+    });
+  });
+</script>
+
+</body>
+</html>
