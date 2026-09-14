@@ -1,0 +1,32 @@
+# Local development stack - a real Postgres to test against before touching
+# the actual droplet. Matches what production will use: a Postgres instance
+# reachable via DATABASE_URL, nothing more. This does not containerise the
+# app itself yet - that's the next step, once this piece is proven.
+#
+#   docker compose up -d              # start Postgres
+#   docker compose down               # stop it (data survives, see volume)
+#   docker compose down -v            # stop it AND wipe the data - careful
+#
+# Then point .env at it:
+#   DATABASE_URL=postgresql://match_analysis:devpassword@localhost:5432/match_analysis
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: match_analysis
+      POSTGRES_USER: match_analysis
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-devpassword}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U match_analysis"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  pgdata:

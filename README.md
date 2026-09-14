@@ -9,11 +9,10 @@ form, minutes and player impact across the whole campaign. `dashboard.html`
 is the front door to all of it.
 
 The visual language (dark navy ground, geometric sans, two-team-colour
-charts) started as a recreation of a single Wycombe Wanderers template PDF
-(`Post Match Report v Leyton Orient.pdf`, still kept in the repo as the
-design reference) — but the report types, the data pipeline, the season
-tracker, and the dashboard were all built from there, for every fixture
-Orient plays, not for that one match.
+charts) started as a recreation of a single, now-retired Wycombe Wanderers
+template PDF — but the report types, the data pipeline, the season tracker,
+and the dashboard were all built from there, for every fixture Orient
+plays, not for that one match.
 
 ## What this produces
 
@@ -71,6 +70,35 @@ separately in `match.toml`, which contains no secrets and is safe to share.
 
 Resolution order for every setting is **real environment variable → file →
 default**, so a one-off override never requires editing anything.
+
+### Optional: Postgres for the processed-matches ledger
+
+`state/processed.json` (which matches have been built, and Impect's
+`lastCalculationDate` for each — how `run.py` knows what's new or revised)
+is the one piece of local state genuinely worth a database instead of a
+file, ahead of deploying this alongside the recruiting platform on the same
+droplet. It's optional and off by default — nothing else here needs it.
+
+```bash
+docker compose up -d                    # starts a local Postgres
+cp .env.example .env                    # if you haven't already
+# edit .env: DATABASE_URL=postgresql://match_analysis:devpassword@localhost:5432/match_analysis
+python3 migrate_state_to_db.py          # one-off: carries over existing history
+python3 run.py --dry-run                # now reading from Postgres instead
+```
+
+Unset `DATABASE_URL` (or leave it out of `.env` entirely) and everything
+goes straight back to `state/processed.json` on local disk — `db.py`'s
+`available()` check is the only thing that branches, so this is a strict
+opt-in, not a new hard dependency. `build_season.py` picks up the same
+backend automatically, since it imports `load_state` from `run.py` rather
+than reading the file itself.
+
+The cached parquet files and generated PDFs/HTML are **not** going into
+Postgres — they're large, columnar, and a poor fit for relational storage.
+Once this is containerised, they're the part that moves onto a Docker
+volume (matching how the recruiting platform already stores its own files
+on the droplet), not the database.
 
 ## Running it
 
@@ -188,6 +216,9 @@ rather than failing.
 | `report_metrics.py` | Every metric definition (the auditable layer) |
 | `report_pages.py` | One renderer per post-match report page |
 | `envconfig.py` | Settings resolution: env var → `match.toml` → default |
+| `db.py` | Optional Postgres backend for the processed-matches ledger — see *Setup* above |
+| `migrate_state_to_db.py` | One-off: imports `state/processed.json` into Postgres |
+| `docker-compose.yml` | Local Postgres for testing the `db.py` path before deployment |
 | `dashboard.html` | Hand-maintained hub — embeds the season tracker, links every report ever built |
 | `test_*_golden.py` | Regression tests pinned to already-verified reports — see *Testing* below |
 

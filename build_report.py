@@ -1,7 +1,7 @@
 """Build the Leyton Orient post-match debrief.
 
-Recreates the Wycombe Wanderers report template
-(`Post Match Report v Leyton Orient.pdf`) from Impect match-level API data.
+Builds one match's post-match report from Impect match-level API data - see
+report_config.py for the visual language's origin.
 
     python3 build_report.py
 

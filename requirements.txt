@@ -1,0 +1,7 @@
+impectPy
+pandas
+numpy
+matplotlib
+PyMuPDF
+pytest
+psycopg2-binary

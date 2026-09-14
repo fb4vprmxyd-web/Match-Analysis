@@ -1,8 +1,8 @@
 """Shared style + config for the post-match debrief generator.
 
-Visual language is copied from the Wycombe Wanderers template
-(`Post Match Report v Leyton Orient.pdf`): dark navy ground, geometric
-sans, two team colours used consistently across every chart.
+Visual language originated from an early Wycombe Wanderers template PDF:
+dark navy ground, geometric sans, two team colours used consistently
+across every chart.
 """
 
 import matplotlib as mpl

@@ -31,6 +31,7 @@ warnings.filterwarnings("ignore")
 
 from envconfig import load_env, load_match, ROOT
 from fetch_data import pull_match
+import db as DB
 
 STATE = ROOT / "state" / "processed.json"
 
@@ -73,12 +74,20 @@ def pretty_matchday(name: str) -> str:
 
 
 def load_state() -> dict:
+    # Postgres is the source of truth once DATABASE_URL is set (see db.py) -
+    # the JSON file is the local-dev fallback, not a second copy to keep in
+    # sync, so this never reads both.
+    if DB.available():
+        return DB.load_state()
     if STATE.exists():
         return json.loads(STATE.read_text())
     return {}
 
 
 def save_state(state: dict) -> None:
+    if DB.available():
+        DB.save_state(state)
+        return
     STATE.parent.mkdir(parents=True, exist_ok=True)
     STATE.write_text(json.dumps(state, indent=2, sort_keys=True))
 
