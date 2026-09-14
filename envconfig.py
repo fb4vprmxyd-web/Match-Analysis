@@ -16,6 +16,26 @@ ROOT = Path(__file__).resolve().parent
 ENV_PATH = ROOT / ".env"
 MATCH_PATH = ROOT / "match.toml"
 
+# Where generated data lives, as opposed to ROOT (where the *code* lives).
+# Defaults to ROOT, so local development is unchanged from before this
+# existed - everything sits next to the scripts, exactly as it always has.
+# In Docker, APP_DATA_DIR points at the mounted volume instead (e.g. /data),
+# which is a separate filesystem location from the image's own /app, so a
+# container rebuild never touches what's on the volume.
+#
+#   DATA_ROOT/cache/<slug>_<matchId>/*.parquet   - pulled match data
+#   DATA_ROOT/reports/*.pdf, dashboard.html*, season-tracker.html
+#
+# dashboard.html itself is the one exception - it's hand-maintained source,
+# not generated, so it stays in ROOT (git-tracked, baked into the image) and
+# just links into DATA_ROOT/reports with a relative "reports/..." href. As
+# long as DATA_ROOT/reports sits next to wherever dashboard.html lives, that
+# link resolves the same way locally and in Docker without dashboard.html
+# needing to know which one it's in.
+DATA_ROOT = Path(os.environ.get("APP_DATA_DIR", str(ROOT)))
+CACHE_ROOT = DATA_ROOT / "cache"
+REPORTS_ROOT = DATA_ROOT / "reports"
+
 
 def load_env(path: Path = ENV_PATH) -> None:
     """Read KEY=VALUE lines into os.environ without clobbering the real env."""

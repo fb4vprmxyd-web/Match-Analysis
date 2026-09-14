@@ -23,8 +23,9 @@ warnings.filterwarnings("ignore")
 
 from impectPy import Impect
 from report_config import MATCH_ID, TEAM
+from envconfig import CACHE_ROOT
 
-DATA = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
+DATA = os.path.join(str(CACHE_ROOT), "data")
 
 # Iterations the account can see that contain the club. Extend if you move club.
 # Iterations the account can see that contain the club. The EFL Cup sits on a

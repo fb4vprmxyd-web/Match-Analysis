@@ -5,3 +5,4 @@ matplotlib
 PyMuPDF
 pytest
 psycopg2-binary
+pyarrow

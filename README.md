@@ -30,7 +30,7 @@ parquet, so report builders work offline and can be re-run freely.
 ## Architecture
 
 ```
-Impect API  →  fetch_data.pull_match()  →  data_<slug>_<matchId>/*.parquet
+Impect API  →  fetch_data.pull_match()  →  DATA_ROOT/cache/<slug>_<matchId>/*.parquet
                                                      │
                      ┌───────────────────────────────┼───────────────────────┐
                      ▼                                ▼                       ▼
@@ -38,10 +38,10 @@ Impect API  →  fetch_data.pull_match()  →  data_<slug>_<matchId>/*.parquet
               (one played match)          + build_corners.py           (whole season log)
                      │                          (N cached matches            │
                      ▼                           per side)                   ▼
-         Post Match Report*.pdf                     │                season-tracker.html
+   DATA_ROOT/reports/Post Match Report*.pdf         │        DATA_ROOT/reports/season-tracker.html
                      │                               ▼                       │
                      └──────────────► dashboard.html ◄─────────────────────┘
-                          Pre-Match Analysis*.pdf / Corner Report*.pdf
+                       DATA_ROOT/reports/{Pre-Match Analysis,Corner Report}*.pdf
 ```
 
 - `run.py` is the routine entry point for **post-match** reports: it checks
@@ -55,6 +55,14 @@ Impect API  →  fetch_data.pull_match()  →  data_<slug>_<matchId>/*.parquet
   event tagging (e.g. a penalty Impect miscategorised under a throw-in
   phase) — applied automatically wherever set-piece figures are computed,
   so a correction can't be right on one page and wrong on another.
+- **`DATA_ROOT`** (see `envconfig.py`) is where all of that actually gets
+  written — `cache/` for pulled parquet, `reports/` for every generated PDF
+  and HTML page. It defaults to the project directory (today's behaviour,
+  unchanged), and becomes the mounted Docker volume once deployed (see
+  *Deployment* below). `dashboard.html` is the one exception: it's
+  hand-maintained, lives at the repo root regardless of `DATA_ROOT`, and
+  just links into `reports/...` — which is why that folder has to sit next
+  to it, in Docker as much as locally.
 
 ## Setup (once)
 
@@ -96,9 +104,9 @@ than reading the file itself.
 
 The cached parquet files and generated PDFs/HTML are **not** going into
 Postgres — they're large, columnar, and a poor fit for relational storage.
-Once this is containerised, they're the part that moves onto a Docker
-volume (matching how the recruiting platform already stores its own files
-on the droplet), not the database.
+Containerised, they're the part that lives on a Docker volume (matching how
+the recruiting platform already stores its own files on the droplet), not
+the database — see *Deployment* below.
 
 ## Running it
 
@@ -190,6 +198,35 @@ PMR_CACHE=data_burton_albion PMR_MATCH_ID=216445 PMR_OPP="Burton Albion" \
 The output filename is derived from the team and opponent, so a stale
 setting cannot silently overwrite a different fixture's report.
 
+### Deployment: Docker
+
+The image is the pipeline, not a web server — there isn't one yet, so the
+files this produces are opened directly (or served some other way) until
+that's built. Deployed, it's invoked on demand rather than left running,
+matching how `run.py` already describes its own usage.
+
+```bash
+docker compose build app
+docker compose up -d postgres
+docker compose run --rm app python3 run.py --dry-run
+docker compose run --rm app python3 run.py
+```
+
+`app` writes to `APP_DATA_DIR` (`/data` in the container, see
+`envconfig.py`), which is the named `appdata` volume in
+`docker-compose.yml` locally, and will be whatever's mounted at that path
+on the droplet — the code never knows the difference. `.env` is passed in
+via `env_file`, never baked into the image (see `.dockerignore`).
+
+Tested end-to-end locally: built the image, pulled a real match through the
+containerised pipeline against the compose Postgres, and confirmed the
+parquet cache, the PDF, and the state row all landed on the volume/database
+rather than local disk.
+
+Not yet built: the serving layer (something to actually host `reports/` and
+gate it behind a login) and the sign-in page itself — see the project's own
+notes on that; it's a deliberately separate decision from this piece.
+
 ### Licences
 
 The league competitions and the EFL Cup are on **separate Impect
@@ -215,11 +252,13 @@ rather than failing.
 | `report_config.py` | Match identity, palette, page geometry, pitch drawing, shared thresholds |
 | `report_metrics.py` | Every metric definition (the auditable layer) |
 | `report_pages.py` | One renderer per post-match report page |
-| `envconfig.py` | Settings resolution: env var → `match.toml` → default |
+| `envconfig.py` | Settings resolution: env var → `match.toml` → default; also defines `DATA_ROOT`/`CACHE_ROOT`/`REPORTS_ROOT` |
 | `db.py` | Optional Postgres backend for the processed-matches ledger — see *Setup* above |
 | `migrate_state_to_db.py` | One-off: imports `state/processed.json` into Postgres |
-| `docker-compose.yml` | Local Postgres for testing the `db.py` path before deployment |
+| `Dockerfile` | Builds the pipeline (not a server yet) into an image — see *Deployment* |
+| `docker-compose.yml` | Local Postgres + the app image, for testing before deployment |
 | `dashboard.html` | Hand-maintained hub — embeds the season tracker, links every report ever built |
+| `cache/`, `reports/` | Generated — pulled parquet and every built PDF/HTML respectively, under `DATA_ROOT` |
 | `test_*_golden.py` | Regression tests pinned to already-verified reports — see *Testing* below |
 
 ## Testing

@@ -20,11 +20,12 @@ import pandas as pd
 
 warnings.filterwarnings("ignore")
 
-from envconfig import load_env, load_match, ROOT
+from envconfig import load_env, load_match, ROOT, CACHE_ROOT, REPORTS_ROOT
 from run import discover, slug, pretty_matchday, load_state, OPP_COLOURS, DEFAULT_OPP_COLOUR
 import manual_corrections as MC
 
-OUT = ROOT / "season-tracker.html"
+REPORTS_ROOT.mkdir(parents=True, exist_ok=True)
+OUT = REPORTS_ROOT / "season-tracker.html"
 
 MIN_MINUTES_ROLLING = 180   # floor for the rolling "most impactful" ranking
 MIN_MINUTES_SINGLE = 45     # floor for a single game to count for best/worst
@@ -34,13 +35,13 @@ def resolve_cache(row, team, cfg, state):
     """Local cache dir for one match, or None if we haven't pulled it."""
     key = str(int(row.id))
     if key in state:
-        d = ROOT / state[key]["cache"]
+        d = CACHE_ROOT / state[key]["cache"]
         return d if d.exists() else None
     if int(row.id) == int(cfg.get("id", -1)):
-        d = ROOT / cfg.get("cache", "data")
+        d = CACHE_ROOT / cfg.get("cache", "data")
         return d if d.exists() else None
     opp = row.awaySquadName if row.homeSquadName == team else row.homeSquadName
-    guess = ROOT / f"data_{slug(opp)}"
+    guess = CACHE_ROOT / slug(opp)
     return guess if guess.exists() else None
 
 
@@ -718,7 +719,7 @@ def main():
     )
 
     OUT.write_text(html_out)
-    print(f"wrote {OUT.relative_to(ROOT)}  ({len(log)} matches, "
+    print(f"wrote {OUT}  ({len(log)} matches, "
           f"{n_player_matches} with player data)")
 
 

@@ -38,8 +38,10 @@ warnings.filterwarnings("ignore")
 from report_config import (apply_style, BG, PANEL, INK, MUTED, GRID, TEAM_C,
                            GOOD, BAD, BARC, PAGE_W, PAGE_H, surname)
 from build_prematch import OPPONENT, OPP_CACHES, OUR_CACHES, US, OPP_C, title
+from envconfig import REPORTS_ROOT
 
-OUT = f"Corner Report - {OPPONENT}.pdf"
+os.makedirs(REPORTS_ROOT, exist_ok=True)
+OUT = os.path.join(str(REPORTS_ROOT), f"Corner Report - {OPPONENT}.pdf")
 
 # ------------------------------------------------------------- zone taxonomy
 # Every value seen in Impect's setPieceSubPhaseCornerEndZone. NEAR/CENTRAL/

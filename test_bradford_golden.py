@@ -32,8 +32,9 @@ import pytest
 
 from _golden_helpers import load_golden
 
+from envconfig import CACHE_ROOT
 ROOT = os.path.dirname(os.path.abspath(__file__))
-CACHE_DIR = os.path.join(ROOT, "data_bradford_city_302115")
+CACHE_DIR = os.path.join(str(CACHE_ROOT), "data_bradford_city_302115")
 
 if not os.path.exists(CACHE_DIR):
     pytest.skip(f"{CACHE_DIR} not pulled - nothing to check against",

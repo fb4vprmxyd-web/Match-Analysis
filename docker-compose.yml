@@ -1,14 +1,18 @@
-# Local development stack - a real Postgres to test against before touching
-# the actual droplet. Matches what production will use: a Postgres instance
-# reachable via DATABASE_URL, nothing more. This does not containerise the
-# app itself yet - that's the next step, once this piece is proven.
+# Local stack: Postgres for the processed-matches ledger (db.py) and the
+# app image itself, writing to a named volume instead of local disk - the
+# same shape production will have on the droplet, just with a plain local
+# volume standing in for whatever's actually mounted there.
 #
-#   docker compose up -d              # start Postgres
-#   docker compose down               # stop it (data survives, see volume)
-#   docker compose down -v            # stop it AND wipe the data - careful
+#   docker compose up -d postgres        # just the database
+#   docker compose build app             # build the app image
+#   docker compose run --rm app python3 run.py --dry-run
+#   docker compose run --rm app python3 run.py
+#   docker compose down                  # stop (data survives - see volumes)
+#   docker compose down -v               # stop AND wipe all data - careful
 #
-# Then point .env at it:
-#   DATABASE_URL=postgresql://match_analysis:devpassword@localhost:5432/match_analysis
+# `app` has no `ports` and isn't meant for `docker compose up -d app` - it's
+# a one-shot pipeline run (see Dockerfile), not a server, until the serving
+# layer exists.
 
 services:
   postgres:
@@ -28,5 +32,18 @@ services:
       timeout: 3s
       retries: 5
 
+  app:
+    build: .
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql://match_analysis:devpassword@postgres:5432/match_analysis}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - appdata:/data
+
 volumes:
   pgdata:
+  appdata:

@@ -47,28 +47,45 @@ import report_metrics as RM
 from report_config import (apply_style, BG, PANEL, INK, MUTED, GRID, GOOD, BAD,
                            BARC, TEAM_C, PAGE_W, PAGE_H, style_bar_axis, surname,
                            draw_pitch, contrast_ink)
+from envconfig import CACHE_ROOT, REPORTS_ROOT
+
+
+def _resolve_caches(names):
+    """Bare cache names resolve under CACHE_ROOT; an absolute path (or one
+    already containing a separator, for a relative override) passes through
+    unchanged - matches build_report.py's own CACHE resolution."""
+    out = []
+    for n in names:
+        n = n.strip()
+        if os.path.isabs(n) or os.sep in n:
+            out.append(n)
+        else:
+            out.append(os.path.join(str(CACHE_ROOT), n))
+    return out
+
 
 # ------------------------------------------------------------------ config
 OPPONENT = os.environ.get("PRE_OPP", "FC Barnsley")
 # each side's last cached matches, comma-separated so a future match day just
 # adds one. Not necessarily the same competition or the same count on both
 # sides - see the module docstring.
-OPP_CACHES = os.environ.get(
+OPP_CACHES = _resolve_caches(os.environ.get(
     "PRE_OPP_CACHES",
     "data_barnsley_l1_1,data_barnsley_l1_2,data_barnsley_cup_1,data_barnsley_cup_2"
-).split(",")
+).split(","))
 US = "Leyton Orient"
 # Orient's Walsall EFL Cup tie isn't published by Impect yet (checked
 # 2026-08-28, still unavailable days after kickoff) - our own sample is 3
 # matches (2 League One + 1 EFL Cup) against Barnsley's 4, asymmetric on
 # purpose rather than waiting. Add the Walsall cache here once it lands.
-OUR_CACHES = os.environ.get(
+OUR_CACHES = _resolve_caches(os.environ.get(
     "PRE_OUR_CACHES",
-    "data_sheffield_wednesday,data,data_oxford_united").split(",")
+    "data_sheffield_wednesday,data,data_oxford_united").split(","))
 OUR_COMPETITION = os.environ.get("PRE_OUR_COMP", "League One")
 FIXTURE = os.environ.get("PRE_FIXTURE",
                          "League One · Brisbane Road · Saturday 29 August 2026")
-OUT = f"Pre-Match Analysis - {OPPONENT}.pdf"
+os.makedirs(REPORTS_ROOT, exist_ok=True)
+OUT = os.path.join(str(REPORTS_ROOT), f"Pre-Match Analysis - {OPPONENT}.pdf")
 
 # Colours per opponent - extend as needed; falls back to a neutral slate blue
 # so a new opponent never crashes the build for want of a hex code. Walsall

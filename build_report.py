@@ -28,13 +28,15 @@ import report_pages as P
 import coach_brief as CB
 import manual_corrections as MC
 
-from envconfig import setting as _s
+from envconfig import setting as _s, CACHE_ROOT, REPORTS_ROOT
 CACHE = _s("PMR_CACHE", "cache", "data")
 if not os.path.isabs(CACHE):
-    CACHE = os.path.join(os.path.dirname(os.path.abspath(__file__)), CACHE)
+    CACHE = os.path.join(str(CACHE_ROOT), CACHE)
 # Derived from the match config so it can never be left pointing at the
 # previous fixture (it silently overwrote the wrong report once).
-OUT = os.environ.get("PMR_OUT", f"Post Match Report - {TEAM} v {OPP}.pdf")
+_out_name = os.environ.get("PMR_OUT", f"Post Match Report - {TEAM} v {OPP}.pdf")
+OUT = _out_name if os.path.isabs(_out_name) else os.path.join(str(REPORTS_ROOT), _out_name)
+os.makedirs(REPORTS_ROOT, exist_ok=True)
 
 
 def load():

@@ -29,11 +29,11 @@ import pandas as pd
 
 warnings.filterwarnings("ignore")
 
-from envconfig import load_env, load_match, ROOT
+from envconfig import load_env, load_match, ROOT, DATA_ROOT, CACHE_ROOT, REPORTS_ROOT
 from fetch_data import pull_match
 import db as DB
 
-STATE = ROOT / "state" / "processed.json"
+STATE = DATA_ROOT / "state" / "processed.json"
 
 # Only the opponent's colour cannot be derived from the match record.
 OPP_COLOURS = {
@@ -287,7 +287,7 @@ def main():
         mid = int(row.id)
         when = pd.to_datetime(row.scheduledDate, errors="coerce", utc=True)
         date_tag = when.strftime("%Y-%m-%d") if pd.notna(when) else str(mid)
-        cache = f"data_{slug(opp)}_{mid}"
+        cache = f"{slug(opp)}_{mid}"
         out = f"Post Match Report - {team} v {opp} ({date_tag}).pdf"
         api = apis.get(row._account)
         if api is None:
@@ -296,7 +296,7 @@ def main():
 
         print(f"\n=== {team} v {opp} ===")
         ids = season_pool(api, int(row._iteration), team, limit)
-        pull_match(api, int(row.id), str(ROOT / cache), season_ids=ids)
+        pull_match(api, int(row.id), str(CACHE_ROOT / cache), season_ids=ids)
 
         env = build_env(row, team, cfg, cache, out)
         print(f"  building {out}")
@@ -317,7 +317,8 @@ def main():
     print("\n" + "=" * 60)
     for o in built:
         print(f"  built: {o}")
-    print(f"{len(built)} report(s) written. State: {STATE.relative_to(ROOT)}")
+    state_desc = "Postgres" if DB.available() else str(STATE.relative_to(DATA_ROOT))
+    print(f"{len(built)} report(s) written. State: {state_desc}")
 
     if built:
         try:
