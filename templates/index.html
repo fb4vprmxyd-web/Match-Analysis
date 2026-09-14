@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% block content %}
+{% if not db_available %}
+<div class="panel">
+  <p><strong>Postgres isn't connected.</strong></p>
+  <p class="muted">Coach's Brief checks live in Postgres - set DATABASE_URL
+  (see .env.example) and restart to write briefs from here.</p>
+</div>
+{% endif %}
+
+<div class="panel">
+  <table>
+    <thead>
+      <tr><th>Match ID</th><th>Opponent</th><th>Report</th><th>Brief</th><th></th></tr>
+    </thead>
+    <tbody>
+      {% for m in matches %}
+      <tr>
+        <td>{{ m.id }}</td>
+        <td>{{ m.opponent }}</td>
+        <td class="muted">{{ m.output }}</td>
+        <td>
+          {% if m.has_brief %}
+            <span class="badge yes">Saved</span>
+          {% else %}
+            <span class="badge no">None yet</span>
+          {% endif %}
+        </td>
+        <td><a class="btn" href="/brief/{{ m.id }}">
+          {{ "Edit" if m.has_brief else "Write" }} brief
+        </a></td>
+      </tr>
+      {% else %}
+      <tr><td colspan="5" class="muted">No matches on record yet.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

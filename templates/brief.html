@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% block content %}
+<p class="muted"><a href="/">&larr; all matches</a></p>
+<div class="panel">
+  <p class="muted" style="margin-top:0;">Match {{ match_id }} · {{ opponent }}</p>
+  <form method="post" action="/brief/{{ match_id }}/interpret">
+    <textarea name="notes" placeholder="Paste the coach's notes here...">{{ notes }}</textarea>
+    <p class="muted">
+      This selects and parameterises from an already-verified metric catalog -
+      it never invents a new computation. Review the readback below before
+      saving anything.
+    </p>
+    <button type="submit">Interpret</button>
+  </form>
+</div>
+
+{% if error %}
+<div class="panel" style="border-color: var(--bad);">
+  <p style="margin:0;"><strong>Couldn't interpret these notes.</strong></p>
+  <p class="muted" style="margin-bottom:0;">{{ error }}</p>
+</div>
+{% endif %}
+
+{% if checks is not none %}
+<div class="panel" id="readback">
+  {% if readback_lines %}
+  <p style="margin-top:0;"><strong>{{ readback_lines|length }} check(s) understood</strong>
+  - check this before saving. If anything's off, edit the notes above and
+  interpret again.</p>
+  {% for line in readback_lines %}
+  <div class="readback-line">{{ line }}</div>
+  {% endfor %}
+  {% else %}
+  <p style="margin:0;"><strong>No checks came back from that text.</strong></p>
+  <p class="muted" style="margin-bottom:0;">Try adding more specific
+  instructions (who, what, out of possession vs in possession) and interpret
+  again.</p>
+  {% endif %}
+</div>
+
+{% if readback_lines %}
+<form method="post" action="/brief/{{ match_id }}/save">
+  <input type="hidden" name="notes" value="{{ notes }}">
+  <input type="hidden" name="checks_json" value="{{ checks_json }}">
+  <button type="submit">Confirm &amp; save</button>
+</form>
+{% endif %}
+
+<script>
+document.getElementById("readback").scrollIntoView({behavior: "smooth", block: "start"});
+</script>
+{% endif %}
+{% endblock %}

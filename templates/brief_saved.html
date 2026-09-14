@@ -1,0 +1,10 @@
+{% extends "base.html" %}
+{% block content %}
+<p class="muted"><a href="/">&larr; all matches</a></p>
+<div class="panel">
+  <p style="margin-top:0;"><strong>Saved.</strong></p>
+  <p class="muted">{{ count }} check(s) saved for match {{ match_id }} ({{ opponent }}).
+  They'll be used the next time this match's post-match report is built.</p>
+  <a class="btn" href="/brief/{{ match_id }}">Edit again</a>
+</div>
+{% endblock %}

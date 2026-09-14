@@ -23,35 +23,15 @@ import tempfile
 
 import db as DB
 from envconfig import load_match
-from run import discover
+from match_lookup import resolve_opponent, match_date
 from brief_interpreter import interpret_brief, readback
 
 
 def _resolve_opponent(match_id: int, given: str):
-    if given:
-        return given
-    state = DB.load_state() if DB.available() else _local_state()
-    rec = state.get(str(match_id))
-    if rec and rec.get("opponent"):
-        return rec["opponent"]
-    sys.exit(f"No opponent on record for match {match_id} - pass --opp explicitly.")
-
-
-def _local_state():
-    import json
-    from envconfig import DATA_ROOT
-    path = DATA_ROOT / "state" / "processed.json"
-    if not path.exists():
-        return {}
-    return json.loads(path.read_text())
-
-
-def _match_date(cfg, team, match_id: int):
-    matches, apis, problems, reached = discover(cfg, team)
-    row = matches[matches.id == match_id]
-    if len(row) == 0:
-        return None
-    return row.scheduledDate.iloc[0]
+    opp = resolve_opponent(match_id, given)
+    if not opp:
+        sys.exit(f"No opponent on record for match {match_id} - pass --opp explicitly.")
+    return opp
 
 
 def _read_notes(args) -> str:
@@ -92,10 +72,10 @@ def main():
     cfg = load_match()
     team = cfg.get("team", "Leyton Orient")
     opp = _resolve_opponent(args.match_id, args.opp)
-    match_date = _match_date(cfg, team, args.match_id)
+    when = match_date(cfg, team, args.match_id)
     raw_text = _read_notes(args)
 
-    checks = interpret_brief(raw_text, cfg, team, opp, match_date=match_date)
+    checks = interpret_brief(raw_text, cfg, team, opp, match_date=when)
 
     while True:
         print(f"\n--- {len(checks)} checks for match {args.match_id} ({team} v {opp}) ---")

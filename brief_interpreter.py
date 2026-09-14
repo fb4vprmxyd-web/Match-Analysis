@@ -22,6 +22,8 @@ from. The interpretation step is the only place free text ever meets an
 LLM; everything after that is as deterministic as the rest of this project.
 """
 
+import ast
+import json
 import os
 
 import anthropic
@@ -157,6 +159,62 @@ def _resolve_baseline(cfg, subject_team, spec, before_date=None):
     return {"caches": caches} if caches else None
 
 
+def _unstringify(value, expect):
+    """Claude's tool-use occasionally serialises a nested array/object as a
+    STRING instead of the real structure - seen here at more than one
+    nesting level (the whole "checks" array, individual check objects,
+    "params"/"baseline_spec" within one), and in two different encodings:
+    valid JSON (double-quoted) and a Python dict/list repr (single-quoted,
+    e.g. "{'section': 'OUT OF POSSESSION', ...}"). Most likely provoked by
+    the wide-open "params" object in the schema having no fixed
+    sub-properties for the model to anchor on. Decoding it here doesn't
+    loosen what's trusted - the section/basis/metric_key checks below still
+    apply to whatever comes out - it just unwraps however the model chose
+    to encode the same content. ast.literal_eval is safe here (literals
+    only, no code execution) unlike a real eval()."""
+    if isinstance(value, str):
+        if not value:
+            return expect()
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError:
+            try:
+                value = ast.literal_eval(value)
+            except (ValueError, SyntaxError):
+                return expect()
+    return value if isinstance(value, type(expect())) else expect()
+
+
+def _extract_checks(value, depth=0):
+    """Digs out the actual checks array, however many layers of wrapping
+    Claude put around it this time. Seen in practice: the array itself as a
+    plain list (the schema's intent); as a JSON string of that list; and -
+    the deepest case, from a real Wycombe-brief call - the WHOLE tool input
+    re-encoded as a JSON string and stuffed back under the same "checks"
+    key, i.e. {"checks": "{\\"checks\\": [...]}"} instead of {"checks":
+    [...]}. Recurses through string-decoding and dict-unwrapping until it
+    finds a real list or gives up - depth-capped so a pathological response
+    can't loop forever."""
+    if depth > 5:
+        return []
+    if isinstance(value, list):
+        return value
+    if isinstance(value, dict):
+        return _extract_checks(value.get("checks", []), depth + 1)
+    if isinstance(value, str):
+        if not value:
+            return []
+        try:
+            decoded = json.loads(value)
+        except json.JSONDecodeError:
+            try:
+                decoded = ast.literal_eval(value)
+            except (ValueError, SyntaxError):
+                return []
+        return _extract_checks(decoded, depth + 1)
+    return []
+
+
 def interpret_brief(raw_text: str, cfg: dict, team: str, opp: str,
                     match_date=None, model: str = None) -> list:
     """Returns a list of check dicts ready for db.save_coach_brief_checks()."""
@@ -170,11 +228,12 @@ def interpret_brief(raw_text: str, cfg: dict, team: str, opp: str,
         messages=[{"role": "user", "content": raw_text}],
     )
     block = next(b for b in resp.content if b.type == "tool_use")
-    raw_checks = block.input.get("checks", [])
+    raw_checks = _extract_checks(block.input.get("checks", []))
 
     section_counters = {s: 0 for s in _SECTIONS}
     checks = []
     for rc in raw_checks:
+        rc = _unstringify(rc, dict)
         section = rc.get("section")
         if section not in _SECTIONS:
             section = "DID IT WORK"
@@ -184,7 +243,7 @@ def interpret_brief(raw_text: str, cfg: dict, team: str, opp: str,
         baseline = None
         if rc.get("basis") == "vs_baseline":
             subject_team = team if rc.get("subject", "us") == "us" else opp
-            spec = rc.get("baseline_spec") or {}
+            spec = _unstringify(rc.get("baseline_spec") or {}, dict)
             baseline = _resolve_baseline(cfg, subject_team, spec, match_date)
             if baseline is None:
                 # couldn't resolve any reference matches - fall back to a
@@ -197,7 +256,7 @@ def interpret_brief(raw_text: str, cfg: dict, team: str, opp: str,
             "instruction": rc["instruction"],
             "metric_key": rc["metric_key"],
             "subject": rc.get("subject", "us"),
-            "params": rc.get("params") or {},
+            "params": _unstringify(rc.get("params") or {}, dict),
             "basis": rc["basis"],
             "lower_better": bool(rc.get("lower_better", False)),
             "target": rc.get("target"),

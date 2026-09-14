@@ -22,10 +22,12 @@ from matplotlib.backends.backend_pdf import PdfPages
 warnings.filterwarnings("ignore")
 
 from report_config import (apply_style, TEAM, OPP, COMPETITION, MATCHDAY,
-                           VENUE_DATE, surname)
+                           VENUE_DATE, MATCH_ID, surname)
 import report_metrics as M
 import report_pages as P
 import coach_brief as CB
+import coach_brief_engine as CBE
+import db as DB
 import manual_corrections as MC
 
 from envconfig import setting as _s, CACHE_ROOT, REPORTS_ROOT
@@ -356,14 +358,21 @@ def main():
     first_change, changes = M.substitution_summary(su, TEAM)
     review = M.performance_review(ev, ps, squad_sums, scores, setp, tbl,
                                   TEAM, OPP)
-    # coach_brief.TARGETS is written against one match's specific pre-match
-    # notes (see its own docstring) - grading a different match against them
-    # produces a page that looks fine but is actually checking instructions
-    # nobody gave for this game. Skip it until the real notes for this match
-    # are in, rather than ship a page that quietly compares to the wrong brief.
+    # Postgres-backed checks (see webapp.py / coach_brief_checks) take
+    # priority when they exist for this match - that's the coach's actual
+    # saved brief for THIS game. Falls back to the old hardcoded
+    # coach_brief.py file otherwise, which is only ever written against
+    # whichever match was built most recently (see its own docstring) - so
+    # using it for a different match's build would quietly grade the wrong
+    # instructions. Skip the page entirely if neither source has anything.
     include_brief = not os.environ.get("PMR_SKIP_COACH_BRIEF")
-    brief = (CB.evaluate(ev, ps, squad_sums, scores, setp, formations, TEAM, OPP)
-            if include_brief else None)
+    brief = None
+    if include_brief:
+        if DB.available() and DB.load_coach_brief_checks(MATCH_ID):
+            brief = CBE.evaluate_from_db(ev, ps, squad_sums, scores, setp,
+                                         TEAM, OPP, MATCH_ID)
+        else:
+            brief = CB.evaluate(ev, ps, squad_sums, scores, setp, formations, TEAM, OPP)
 
     pages = [
         lambda f: P.page_cover(f, TEAM, OPP, COMPETITION, MATCHDAY,
