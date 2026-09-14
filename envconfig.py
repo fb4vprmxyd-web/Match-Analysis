@@ -79,6 +79,22 @@ def setting(key: str, toml_key: str, default, cast=str):
     return cast(raw)
 
 
+def anthropic_key() -> str:
+    """Anthropic API key for the free-text interpretation layer (see
+    brief_interpreter.py / selector_interpreter.py) - same actionable-error
+    pattern as credentials()."""
+    load_env()
+    key = os.environ.get("ANTHROPIC_API_KEY")
+    if not key:
+        sys.exit(
+            "ANTHROPIC_API_KEY not found.\n"
+            f"  Add it to {ENV_PATH}:\n"
+            "      ANTHROPIC_API_KEY=sk-ant-...\n"
+            "  then:  chmod 600 .env"
+        )
+    return key
+
+
 def credentials() -> tuple:
     """Impect username and password, with an actionable error if unset."""
     load_env()
