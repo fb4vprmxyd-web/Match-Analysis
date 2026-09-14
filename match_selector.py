@@ -27,6 +27,29 @@ from run import slug, discover
 from fetch_data import pull_match
 
 
+def find_upcoming_fixture(cfg: dict, team: str, opp: str):
+    """The next not-yet-played match between `team` and `opp`, formatted as
+    build_prematch.py's PRE_FIXTURE expects ("<competition> · <venue> ·
+    <date>"). Returns None if there's no scheduled fixture on record - a
+    pre-match report built without one falls back to whatever stale example
+    string is hardcoded in build_prematch.py, so callers should surface
+    that rather than silently shipping the wrong fixture details."""
+    matches, apis, problems, reached = discover(cfg, team)
+    if len(matches) == 0:
+        return None
+    involved = (matches.homeSquadName == opp) | (matches.awaySquadName == opp)
+    upcoming = matches[involved & (matches.available == False)].sort_values("scheduledDate")
+    if len(upcoming) == 0:
+        return None
+    row = upcoming.iloc[0]
+    home = row.homeSquadName == team
+    when = pd.to_datetime(row.scheduledDate, errors="coerce", utc=True)
+    date_txt = when.strftime("%A %-d %B %Y") if pd.notna(when) else ""
+    venue = cfg.get("home_venue", "Brisbane Road") if home else f"Away at {opp}"
+    competition = str(row.get("competitionName", "")).strip()
+    return " · ".join(p for p in (competition, venue, date_txt) if p)
+
+
 def _find_existing_cache(match_id: int):
     """A cache already exists for this match if any directory under
     CACHE_ROOT ends in _<matchId> - robust to the several different naming

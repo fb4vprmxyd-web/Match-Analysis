@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block title %}Pre-Match Selector{% endblock %}
+{% block content %}
+<div class="panel">
+  <p style="margin-top:0;"><strong>Report ready.</strong></p>
+  <p class="muted">{{ opponent }}: {{ opp_caches|length }} match(es).
+  Us: {{ our_caches|length }} match(es).</p>
+
+  {% if not fixture_found %}
+  <p class="muted" style="color: var(--amber);">
+    No scheduled fixture found between us and {{ opponent }} - the report's
+    game-info banner may show placeholder details. Worth a quick check on
+    the cover page before sharing it.
+  </p>
+  {% endif %}
+
+  {% if report_exists %}
+  <a class="btn" href="{{ report_url }}" target="_blank">Open report</a>
+  {% else %}
+  <p><strong>The build finished but the PDF wasn't found where expected.</strong></p>
+  {% endif %}
+</div>
+
+<a class="btn" href="/selector" style="background:transparent;border:1px solid var(--grid);">Do another</a>
+{% endblock %}

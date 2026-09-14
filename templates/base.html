@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>{% block title %}Leyton Orient — Coach's Brief{% endblock %}</title>
+<title>{% block title %}Leyton Orient — Match Analysis{% endblock %}</title>
 <style>
   :root {
     --bg: #171E29;
@@ -102,12 +102,25 @@
   }
   .readback-line:last-child { border-bottom: none; }
   form { margin: 0; }
+  header nav { margin-top: 10px; }
+  header nav a {
+    color: var(--muted);
+    text-decoration: none;
+    font-size: 13.5px;
+    font-weight: 600;
+    margin-right: 20px;
+  }
+  header nav a.active { color: var(--ink); }
 </style>
 </head>
 <body>
 <header>
   <p class="kicker">Leyton Orient</p>
-  <p class="title"><a href="/" style="color:inherit;text-decoration:none;">Coach's Brief</a></p>
+  <p class="title"><a href="/" style="color:inherit;text-decoration:none;">Match Analysis</a></p>
+  <nav>
+    <a href="/" class="{{ 'active' if request.path == '/' or request.path.startswith('/brief') else '' }}">Coach's Brief</a>
+    <a href="/selector" class="{{ 'active' if request.path.startswith('/selector') else '' }}">Pre-Match Selector</a>
+  </nav>
 </header>
 <main>
 {% block content %}{% endblock %}

@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% block title %}Pre-Match Selector{% endblock %}
+{% block content %}
+<div class="panel">
+  <form method="post" action="/selector/interpret">
+    <label class="muted" style="display:block; margin-bottom:6px;">Opponent</label>
+    <input type="text" name="opponent" value="{{ opponent }}"
+          placeholder="e.g. Bradford City"
+          style="width:100%; margin-bottom:16px; background:var(--sidebar); color:var(--ink);
+                 border:1px solid var(--grid); border-radius:8px; padding:10px 12px;
+                 font-family:inherit; font-size:14px;">
+    <label class="muted" style="display:block; margin-bottom:6px;">Sample</label>
+    <textarea name="notes" style="min-height:100px;"
+             placeholder="e.g. last 10 games from each team, or last 5 cup games for each team">{{ notes }}</textarea>
+    <p class="muted">
+      Describes how many of each side's recent matches to pull in - the
+      count is capped to however many actually exist this season, so
+      uneven totals between the two sides are normal.
+    </p>
+    <button type="submit">Interpret</button>
+  </form>
+</div>
+
+{% if error %}
+<div class="panel" style="border-color: var(--bad);">
+  <p style="margin:0;"><strong>Couldn't resolve this.</strong></p>
+  <p class="muted" style="margin-bottom:0;">{{ error }}</p>
+</div>
+{% endif %}
+
+{% if specs is not none %}
+<div class="panel" id="readback">
+  <p style="margin-top:0;"><strong>Here's what was understood</strong> - this
+  will be resolved against the live fixture list, pulling anything not
+  already cached.</p>
+  {% for line in readback_lines %}
+  <div class="readback-line">{{ line }}</div>
+  {% endfor %}
+</div>
+
+<form method="post" action="/selector/resolve">
+  <input type="hidden" name="opponent" value="{{ opponent }}">
+  <input type="hidden" name="specs_json" value="{{ specs_json }}">
+  <button type="submit">Resolve &amp; write config</button>
+</form>
+
+<script>
+document.getElementById("readback").scrollIntoView({behavior: "smooth", block: "start"});
+</script>
+{% endif %}
+{% endblock %}
