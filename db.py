@@ -37,6 +37,45 @@ CREATE TABLE IF NOT EXISTS processed_matches (
     opponent                TEXT,
     output                  TEXT
 );
+
+-- One match's Coach's Brief, as structured checks rather than hand-written
+-- Python - see metric_catalog.py and coach_brief_engine.py. Replaces the
+-- old single-active-coach_brief.py-file architecture: every match's real
+-- Brief now lives here permanently, independent of every other match's, so
+-- rebuilding one match's report never risks overwriting another's notes.
+CREATE TABLE IF NOT EXISTS coach_brief_checks (
+    id              SERIAL PRIMARY KEY,
+    match_id        BIGINT NOT NULL,
+    section         TEXT NOT NULL,   -- 'OUT OF POSSESSION' / 'IN POSSESSION' / 'DID IT WORK'
+    sort_order      INTEGER NOT NULL DEFAULT 0,
+    instruction     TEXT NOT NULL,   -- the coach's own label, e.g. "Stop crosses"
+    metric_key      TEXT NOT NULL,   -- metric_catalog.CATALOG key
+    subject         TEXT NOT NULL DEFAULT 'us',  -- whose data: 'us' or 'opp'
+    params          JSONB NOT NULL DEFAULT '{}',
+    basis           TEXT NOT NULL,   -- 'beat_opponent' / 'absolute' / 'vs_baseline' / 'info'
+    lower_better    BOOLEAN NOT NULL DEFAULT FALSE,
+    target          DOUBLE PRECISION,   -- for 'absolute'
+    margin          DOUBLE PRECISION,   -- for 'beat_opponent' / 'vs_baseline'
+    -- for 'vs_baseline': {"caches": ["<cache dir>", ...]} - resolved to
+    -- concrete cache directories at check-creation time (by whatever turns
+    -- "vs their previous game" into a check), not re-derived at grading
+    -- time, so grading never needs fixture-list awareness.
+    baseline        JSONB,
+    source_note     TEXT,            -- the free-text sentence this came from, if any
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS coach_brief_checks_match_id_idx
+    ON coach_brief_checks (match_id);
+
+-- The coach's raw notes for a match, kept alongside the interpreted checks
+-- above so "regenerate" can re-interpret from the original wording rather
+-- than from whatever the last interpretation produced.
+CREATE TABLE IF NOT EXISTS coach_brief_notes (
+    match_id     BIGINT PRIMARY KEY,
+    raw_text     TEXT NOT NULL,
+    updated_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
 """
 
 _schema_ready = False
@@ -114,3 +153,88 @@ def save_state(state: dict) -> None:
                 rec.get("output"),
             ))
         conn.commit()
+
+
+# ------------------------------------------------------- coach's brief checks
+def save_coach_brief_checks(match_id: int, checks: list) -> None:
+    """Replaces every check for this match - a full delete+insert, not a
+    diff/merge, matching how 'regenerate' is meant to work: the coach edits
+    his notes, re-interpretation produces a fresh full set of checks, and
+    that fully replaces whatever was there before. Each check dict:
+    {section, sort_order, instruction, metric_key, subject, params, basis,
+    lower_better, target, margin, baseline, source_note}."""
+    import json
+    init_schema()
+    with _connect() as conn, conn.cursor() as cur:
+        cur.execute("DELETE FROM coach_brief_checks WHERE match_id = %s", (match_id,))
+        for c in checks:
+            cur.execute("""
+                INSERT INTO coach_brief_checks
+                    (match_id, section, sort_order, instruction, metric_key,
+                     subject, params, basis, lower_better, target, margin,
+                     baseline, source_note)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """, (
+                match_id, c["section"], c.get("sort_order", 0), c["instruction"],
+                c["metric_key"], c.get("subject", "us"),
+                json.dumps(c.get("params", {})), c["basis"],
+                c.get("lower_better", False), c.get("target"), c.get("margin"),
+                json.dumps(c["baseline"]) if c.get("baseline") else None,
+                c.get("source_note"),
+            ))
+        conn.commit()
+
+
+# The page always reads out of-possession first, in-possession second, then
+# the outcome section last - "ORDER BY section" alone sorts those three
+# strings alphabetically instead ('DID IT WORK' < 'IN POSSESSION' <
+# 'OUT OF POSSESSION'), which silently put the outcome section first. Sort
+# in Python against this fixed order rather than trust string comparison.
+SECTION_ORDER = ["OUT OF POSSESSION", "IN POSSESSION", "DID IT WORK"]
+
+
+def load_coach_brief_checks(match_id: int) -> list:
+    """Returns checks in the page's fixed section order, then sort_order,
+    ready for coach_brief_engine.evaluate_from_db()."""
+    init_schema()
+    with _connect() as conn, conn.cursor() as cur:
+        cur.execute("""
+            SELECT section, sort_order, instruction, metric_key, subject,
+                   params, basis, lower_better, target, margin, baseline, source_note
+            FROM coach_brief_checks
+            WHERE match_id = %s
+            ORDER BY sort_order, id
+        """, (match_id,))
+        rows = cur.fetchall()
+    cols = ("section", "sort_order", "instruction", "metric_key", "subject",
+            "params", "basis", "lower_better", "target", "margin", "baseline",
+            "source_note")
+    checks = [dict(zip(cols, r)) for r in rows]
+
+    def _key(c):
+        sec = c["section"]
+        idx = SECTION_ORDER.index(sec) if sec in SECTION_ORDER else len(SECTION_ORDER)
+        return (idx, c["sort_order"])
+
+    return sorted(checks, key=_key)
+
+
+def save_coach_brief_notes(match_id: int, raw_text: str) -> None:
+    init_schema()
+    with _connect() as conn, conn.cursor() as cur:
+        cur.execute("""
+            INSERT INTO coach_brief_notes (match_id, raw_text, updated_at)
+            VALUES (%s, %s, now())
+            ON CONFLICT (match_id) DO UPDATE SET
+                raw_text = EXCLUDED.raw_text, updated_at = now()
+        """, (match_id, raw_text))
+        conn.commit()
+
+
+def load_coach_brief_notes(match_id: int):
+    init_schema()
+    with _connect() as conn, conn.cursor() as cur:
+        cur.execute("SELECT raw_text FROM coach_brief_notes WHERE match_id = %s",
+                    (match_id,))
+        row = cur.fetchone()
+    return row[0] if row else None
