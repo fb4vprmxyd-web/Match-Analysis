@@ -4,11 +4,19 @@
 <div class="panel">
   <form method="post" action="/selector/interpret">
     <label class="muted" style="display:block; margin-bottom:6px;">Opponent</label>
-    <input type="text" name="opponent" value="{{ opponent }}"
-          placeholder="e.g. Bradford City"
+    <select name="opponent"
           style="width:100%; margin-bottom:16px; background:var(--sidebar); color:var(--ink);
                  border:1px solid var(--grid); border-radius:8px; padding:10px 12px;
                  font-family:inherit; font-size:14px;">
+      <option value="" {{ "selected" if not opponent }} disabled>Choose an opponent…</option>
+      {% for name in opponents %}
+      <option value="{{ name }}" {{ "selected" if name == opponent }}>{{ name }}</option>
+      {% endfor %}
+    </select>
+    {% if opponents is defined and not opponents %}
+    <p class="muted" style="margin-top:-10px;">No fixtures found for this club yet -
+    check the account's credentials and iterations in match.toml.</p>
+    {% endif %}
     <label class="muted" style="display:block; margin-bottom:6px;">Sample</label>
     <textarea name="notes" style="min-height:100px;"
              placeholder="e.g. last 10 games from each team, or last 5 cup games for each team">{{ notes }}</textarea>
@@ -41,7 +49,7 @@
 <form method="post" action="/selector/resolve">
   <input type="hidden" name="opponent" value="{{ opponent }}">
   <input type="hidden" name="specs_json" value="{{ specs_json }}">
-  <button type="submit">Resolve &amp; write config</button>
+  <button type="submit">Resolve &amp; build report</button>
 </form>
 
 <script>

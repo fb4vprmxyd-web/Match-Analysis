@@ -2,7 +2,7 @@
 {% block title %}Pre-Match Selector{% endblock %}
 {% block content %}
 <div class="panel">
-  <p style="margin-top:0;"><strong>Report ready.</strong></p>
+  <p style="margin-top:0;"><strong>Reports ready.</strong></p>
   <p class="muted">{{ opponent }}: {{ opp_caches|length }} match(es).
   Us: {{ our_caches|length }} match(es).</p>
 
@@ -15,9 +15,16 @@
   {% endif %}
 
   {% if report_exists %}
-  <a class="btn" href="{{ report_url }}" target="_blank">Open report</a>
+  <a class="btn" href="{{ report_url }}" target="_blank">Open pre-match analysis</a>
   {% else %}
-  <p><strong>The build finished but the PDF wasn't found where expected.</strong></p>
+  <p><strong>The pre-match build finished but the PDF wasn't found where expected.</strong></p>
+  {% endif %}
+
+  {% if corner_exists %}
+  <a class="btn" href="{{ corner_url }}" target="_blank" style="margin-left:8px;">Open set piece report</a>
+  {% elif corner_error %}
+  <p style="color: var(--bad); margin-bottom:4px;"><strong>Set piece report build failed.</strong></p>
+  <p class="muted" style="white-space: pre-wrap;">{{ corner_error }}</p>
   {% endif %}
 </div>
 

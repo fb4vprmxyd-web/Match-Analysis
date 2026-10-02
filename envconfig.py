@@ -26,12 +26,10 @@ MATCH_PATH = ROOT / "match.toml"
 #   DATA_ROOT/cache/<slug>_<matchId>/*.parquet   - pulled match data
 #   DATA_ROOT/reports/*.pdf, dashboard.html*, season-tracker.html
 #
-# dashboard.html itself is the one exception - it's hand-maintained source,
-# not generated, so it stays in ROOT (git-tracked, baked into the image) and
-# just links into DATA_ROOT/reports with a relative "reports/..." href. As
-# long as DATA_ROOT/reports sits next to wherever dashboard.html lives, that
-# link resolves the same way locally and in Docker without dashboard.html
-# needing to know which one it's in.
+# dashboard.html itself (templates/dashboard.html, rendered by webapp.py's
+# "/" route) is source, not generated - it just links into DATA_ROOT/reports
+# with a relative "reports/..." href, resolved the same way locally and in
+# Docker without it needing to know which one it's in.
 DATA_ROOT = Path(os.environ.get("APP_DATA_DIR", str(ROOT)))
 CACHE_ROOT = DATA_ROOT / "cache"
 REPORTS_ROOT = DATA_ROOT / "reports"

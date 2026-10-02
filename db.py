@@ -21,6 +21,7 @@ today.
 """
 
 import os
+from datetime import datetime, timezone
 
 from envconfig import load_env
 
@@ -76,6 +77,23 @@ CREATE TABLE IF NOT EXISTS coach_brief_notes (
     raw_text     TEXT NOT NULL,
     updated_at   TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- One row per upcoming fixture that already has a pre-match/corner report -
+-- see match_selector.record_prematch_build(). Existence alone is the gate:
+-- build_upcoming.py's automatic pass only fills in a fixture with no row
+-- here yet, whether the row it finds later came from that same automatic
+-- pass or from the coach's assistant using /selector by hand.
+CREATE TABLE IF NOT EXISTS prematch_builds (
+    fixture_id   BIGINT PRIMARY KEY,
+    opponent     TEXT,
+    source       TEXT NOT NULL,   -- 'auto' or 'manual'
+    built_at     TEXT
+);
+-- Cached display text for the dashboard's Pre-Match/Corner Analysis cards
+-- (see match_selector.sample_caption()) - added after the table above, so
+-- existing rows just get NULLs here until their fixture is next rebuilt.
+ALTER TABLE IF EXISTS prematch_builds ADD COLUMN IF NOT EXISTS fixture_text TEXT;
+ALTER TABLE IF EXISTS prematch_builds ADD COLUMN IF NOT EXISTS sample_note TEXT;
 """
 
 _schema_ready = False
@@ -152,6 +170,46 @@ def save_state(state: dict) -> None:
                 rec.get("opponent"),
                 rec.get("output"),
             ))
+        conn.commit()
+
+
+def load_prematch_builds() -> dict:
+    """Same shape match_selector.py's JSON-file load_prematch_builds()
+    returns: {str(fixtureId): {opponent, source, fixtureText, sampleNote,
+    builtAt}}."""
+    init_schema()
+    with _connect() as conn, conn.cursor() as cur:
+        cur.execute("""
+            SELECT fixture_id, opponent, source, fixture_text, sample_note, built_at
+            FROM prematch_builds
+        """)
+        rows = cur.fetchall()
+    return {
+        str(fid): {
+            "opponent": opponent, "source": source,
+            "fixtureText": fixture_text or "", "sampleNote": sample_note or "",
+            "builtAt": built_at,
+        }
+        for fid, opponent, source, fixture_text, sample_note, built_at in rows
+    }
+
+
+def save_prematch_build(fixture_id: int, opponent: str, source: str,
+                        fixture_text: str = "", sample_note: str = "") -> None:
+    init_schema()
+    with _connect() as conn, conn.cursor() as cur:
+        cur.execute("""
+            INSERT INTO prematch_builds
+                (fixture_id, opponent, source, fixture_text, sample_note, built_at)
+            VALUES (%s, %s, %s, %s, %s, %s)
+            ON CONFLICT (fixture_id) DO UPDATE SET
+                opponent     = EXCLUDED.opponent,
+                source       = EXCLUDED.source,
+                fixture_text = EXCLUDED.fixture_text,
+                sample_note  = EXCLUDED.sample_note,
+                built_at     = EXCLUDED.built_at
+        """, (int(fixture_id), opponent, source, fixture_text, sample_note,
+              datetime.now(timezone.utc).isoformat(timespec="seconds")))
         conn.commit()
 
 
