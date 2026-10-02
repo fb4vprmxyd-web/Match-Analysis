@@ -1,21 +1,38 @@
-"""Corner-routine pre-match template, for the set-piece coach.
+"""Set-piece pre-match template, for the set-piece coach.
 
     python3 build_corners.py
 
-Second version, revised per the set-piece coach's own review of the first
-draft:
-  - box diagrams are drawn goal-at-top (the first draft had the goal at the
-    bottom, which nobody actually reads a corner diagram as)
+Third version - broadened from corners-only to every attacking set piece
+with a real delivery pattern: corners, wide free kicks (crosses/high balls
+into the box - direct shots and pure restarts excluded, they're not a
+delivery pattern), and throw-ins taken close enough to the box to be a
+goal-threat rather than a possession restart. Free kicks and throw-ins get
+a text breakdown (side split, delivery type, who takes it, who wins first
+contact, what happens to the second ball) rather than the corner pages'
+plotted box diagrams - Impect's end-zone taxonomy for those two is a
+whole-pitch vocabulary (wings/half-spaces/thirds), not the tight box grid
+corners have, so forcing it onto the same diagram would mean inventing a
+zone mapping nobody has verified the way the corner grid's left/right
+convention was verified against real corners (see _first_touch_points()'s
+docstring on that bug). Worth building properly later if it turns out to
+matter enough.
+
+The old page 2 ("CORNERS — OURS": our own delivery/takers/first-contact)
+was dropped per the set-piece coach's own call - this report exists to
+brief them on the OPPONENT, and repeating our own routine back to us
+wasn't earning its page. What stayed: "what we know about them defending
+corners," now with a goals/xG headline and a second-ball note alongside
+it.
+
+Corner-page conventions carried over unchanged:
+  - box diagrams are drawn goal-at-top
   - left and right are TRUE pitch sides throughout, not a "near post always
     on the left" schematic - a right corner's near post renders on the
     right, matching how the coach draws these on a whiteboard
   - "who delivers" lists every individual taker's share on each side, not
     just the single most frequent one
-  - "first contact" is a box diagram with real individual contact points
-    plotted from event coordinates (labelled, coloured by won/lost),
-    not a bar chart of zone percentages
 
-Also now built from each side's cached matches via build_prematch.py's own
+Built from each side's cached matches via build_prematch.py's own
 OPP_CACHES/OUR_CACHES config - not fixed at two, not fixed to league matches.
 Whatever sample that report was built with (mixed competitions, uneven counts
 either side) is what this one inherits automatically.
@@ -35,13 +52,13 @@ from matplotlib.backends.backend_pdf import PdfPages
 
 warnings.filterwarnings("ignore")
 
-from report_config import (apply_style, BG, PANEL, INK, MUTED, GRID, TEAM_C,
-                           GOOD, BAD, BARC, PAGE_W, PAGE_H, surname)
-from build_prematch import OPPONENT, OPP_CACHES, OUR_CACHES, US, OPP_C, title
+from report_config import (apply_style, BG, PANEL, INK, MUTED, GRID,
+                           GOOD, BAD, BARC, PAGE_W, PAGE_H, surname, player_table)
+from build_prematch import OPPONENT, OPP_CACHES, OPP_C, title
 from envconfig import REPORTS_ROOT
 
 os.makedirs(REPORTS_ROOT, exist_ok=True)
-OUT = os.path.join(str(REPORTS_ROOT), f"Corner Report - {OPPONENT}.pdf")
+OUT = os.path.join(str(REPORTS_ROOT), f"Set Piece Report - {OPPONENT}.pdf")
 
 # ------------------------------------------------------------- zone taxonomy
 # Every value seen in Impect's setPieceSubPhaseCornerEndZone. NEAR/CENTRAL/
@@ -78,7 +95,8 @@ def corner_phases(setp, attacking=None, defending=None):
     zone when it has none of its own, which is the common case.
     """
     cols = ["setPieceId", "side", "taker", "zone", "attacking", "defending",
-            "first_touch_player", "first_touch_won", "first_touch_zone", "xg"]
+            "first_touch_player", "first_touch_won", "first_touch_zone",
+            "second_touch_player", "second_touch_won", "xg", "goals"]
     if setp is None or len(setp) == 0:
         return pd.DataFrame(columns=cols)
     d = setp[setp.setPieceCategory.isin(["CORNER_LEFT", "CORNER_RIGHT"])]
@@ -100,6 +118,8 @@ def corner_phases(setp, attacking=None, defending=None):
                       else dr.setPieceSubPhaseCornerEndZone)
         else:
             ft_player, ft_won, ft_zone = None, None, None
+        st = g[g.setPieceSubPhaseSecondTouchPlayerName.notna()]
+        sr = st.iloc[0] if len(st) else None
         rows.append(dict(
             setPieceId=pid,
             side="LEFT" if dr.setPieceCategory == "CORNER_LEFT" else "RIGHT",
@@ -107,7 +127,112 @@ def corner_phases(setp, attacking=None, defending=None):
             zone=dr.setPieceSubPhaseCornerEndZone,
             attacking=dr.attackingSquadName, defending=dr.defendingSquadName,
             first_touch_player=ft_player, first_touch_won=ft_won,
-            first_touch_zone=ft_zone, xg=float(g.setPieceSubPhase_SHOT_XG.sum())))
+            first_touch_zone=ft_zone,
+            second_touch_player=(sr.setPieceSubPhaseSecondTouchPlayerName if sr is not None else None),
+            second_touch_won=(sr.setPieceSubPhaseSecondTouchWon if sr is not None else None),
+            xg=float(g.setPieceSubPhase_SHOT_XG.sum()),
+            goals=int(g.setPieceSubPhase_GOALS.sum())))
+    return pd.DataFrame(rows, columns=cols)
+
+
+# Genuine box deliveries only - direct shots and pure restarts
+# (INTO_POSSESSION/INTO_ATTACK/OTHER/VARIANT) aren't a delivery pattern the
+# way a cross is, so they're excluded rather than counted as "a free kick
+# with no delivery type."
+FREEKICK_DELIVERY_TYPES = {
+    "FREE_KICK_CROSS_NEAR_POST", "FREE_KICK_CROSS_FAR_POST",
+    "FREE_KICK_CROSS_CENTRAL", "FREE_KICK_CROSS_BACK_OF_BOX",
+    "FREE_KICK_HIGH_BALL", "FREE_KICK_HIGH_BALL_BOX",
+}
+# A throw taken from open midfield is a possession tool, not a goal threat -
+# only ones started from beside or in front of the opponent's box are a
+# set-piece delivery pattern worth scouting here.
+THROWIN_NEAR_BOX_STARTS = ("WING_IN_FRONT_OF_BOX", "WING_BESIDES_BOX")
+
+
+def _side_from_zone(zone: str):
+    if not isinstance(zone, str):
+        return None
+    if "LEFT" in zone:
+        return "LEFT"
+    if "RIGHT" in zone:
+        return "RIGHT"
+    return None
+
+
+def freekick_phases(setp, attacking=None, defending=None):
+    """One row per wide free kick delivered into the box - side is read
+    from where the kick was taken (there's no FREE_KICK_LEFT/RIGHT category
+    the way corners have)."""
+    cols = ["setPieceId", "side", "taker", "delivery_type", "start_zone",
+            "attacking", "defending", "first_touch_player", "first_touch_won",
+            "second_touch_player", "second_touch_won", "xg", "goals"]
+    if setp is None or len(setp) == 0:
+        return pd.DataFrame(columns=cols)
+    d = setp[setp.setPieceCategory == "FREE_KICK"]
+    if attacking:
+        d = d[d.attackingSquadName == attacking]
+    if defending:
+        d = d[d.defendingSquadName == defending]
+    rows = []
+    for pid, g in d.groupby("setPieceId"):
+        deliv = g[g.setPieceSubPhaseFreeKickType.isin(FREEKICK_DELIVERY_TYPES)]
+        if len(deliv) == 0:
+            continue
+        dr = deliv.iloc[0]
+        ft = g[g.setPieceSubPhaseFirstTouchPlayerName.notna()]
+        fr = ft.iloc[0] if len(ft) else None
+        st = g[g.setPieceSubPhaseSecondTouchPlayerName.notna()]
+        sr = st.iloc[0] if len(st) else None
+        rows.append(dict(
+            setPieceId=pid, side=_side_from_zone(dr.setPieceSubPhaseStartZone),
+            taker=dr.setPieceSubPhaseMainEventPlayerName,
+            delivery_type=dr.setPieceSubPhaseFreeKickType,
+            start_zone=dr.setPieceSubPhaseStartZone,
+            attacking=dr.attackingSquadName, defending=dr.defendingSquadName,
+            first_touch_player=(fr.setPieceSubPhaseFirstTouchPlayerName if fr is not None else None),
+            first_touch_won=(fr.setPieceSubPhaseFirstTouchWon if fr is not None else None),
+            second_touch_player=(sr.setPieceSubPhaseSecondTouchPlayerName if sr is not None else None),
+            second_touch_won=(sr.setPieceSubPhaseSecondTouchWon if sr is not None else None),
+            xg=float(g.setPieceSubPhase_SHOT_XG.sum()),
+            goals=int(g.setPieceSubPhase_GOALS.sum())))
+    return pd.DataFrame(rows, columns=cols)
+
+
+def throwin_phases(setp, attacking=None, defending=None):
+    """One row per throw-in taken close enough to the box to be a goal
+    threat - side is read from the start zone, same as free kicks."""
+    cols = ["setPieceId", "side", "taker", "delivery_type", "start_zone",
+            "attacking", "defending", "first_touch_player", "first_touch_won",
+            "second_touch_player", "second_touch_won", "xg", "goals"]
+    if setp is None or len(setp) == 0:
+        return pd.DataFrame(columns=cols)
+    d = setp[setp.setPieceCategory == "THROW_IN"]
+    if attacking:
+        d = d[d.attackingSquadName == attacking]
+    if defending:
+        d = d[d.defendingSquadName == defending]
+    rows = []
+    for pid, g in d.groupby("setPieceId"):
+        dr = g.iloc[0]
+        start = dr.setPieceSubPhaseStartZone
+        if not isinstance(start, str) or not any(k in start for k in THROWIN_NEAR_BOX_STARTS):
+            continue
+        ft = g[g.setPieceSubPhaseFirstTouchPlayerName.notna()]
+        fr = ft.iloc[0] if len(ft) else None
+        st = g[g.setPieceSubPhaseSecondTouchPlayerName.notna()]
+        sr = st.iloc[0] if len(st) else None
+        rows.append(dict(
+            setPieceId=pid, side=_side_from_zone(start),
+            taker=dr.setPieceSubPhaseMainEventPlayerName,
+            delivery_type=dr.setPieceSubPhaseThrowInType, start_zone=start,
+            attacking=dr.attackingSquadName, defending=dr.defendingSquadName,
+            first_touch_player=(fr.setPieceSubPhaseFirstTouchPlayerName if fr is not None else None),
+            first_touch_won=(fr.setPieceSubPhaseFirstTouchWon if fr is not None else None),
+            second_touch_player=(sr.setPieceSubPhaseSecondTouchPlayerName if sr is not None else None),
+            second_touch_won=(sr.setPieceSubPhaseSecondTouchWon if sr is not None else None),
+            xg=float(g.setPieceSubPhase_SHOT_XG.sum()),
+            goals=int(g.setPieceSubPhase_GOALS.sum())))
     return pd.DataFrame(rows, columns=cols)
 
 
@@ -172,6 +297,58 @@ def _first_touch_points(ev, attacking_squad):
                           "playerName": d.playerName.values,
                           "x_box": -iy, "y_box": ix - 52.5,
                           "won": d.setPieceSubPhaseFirstTouchWon.values})
+
+
+def _touch_points(ev, attacking_squad, categories):
+    """Real (x, y) first-touch location for any set piece category - the
+    same mirroring/sign transform as _first_touch_points() above (see its
+    docstring; that's the one actually verified against real corners),
+    generalized rather than duplicated with different math. Unlike the
+    corner version this doesn't compute 'side' itself - free kicks and
+    throw-ins don't carry it on the touch event the way CORNER_LEFT/
+    CORNER_RIGHT does, so callers join the result onto their own phases
+    frame (freekick_phases()/throwin_phases()) by setPieceId, which
+    already derived each delivery's side correctly from its start zone.
+    Also doesn't need the corner version's OPEN_PLAY exclusion - callers
+    only ever pass this a `d` already filtered to genuine box deliveries,
+    so a setPieceId that isn't a real delivery is never in the join."""
+    cols = ["setPieceId", "playerName", "x_box", "y_box", "won"]
+    if ev is None or len(ev) == 0 or "setPieceId" not in ev.columns:
+        return pd.DataFrame(columns=cols)
+    d = ev[ev.setPieceCategory.isin(categories)
+           & (ev.attackingSquadName == attacking_squad)
+           & ev.setPieceSubPhaseFirstTouchPlayerName.notna()
+           & (ev.playerName == ev.setPieceSubPhaseFirstTouchPlayerName)]
+    if len(d) == 0:
+        return pd.DataFrame(columns=cols)
+    d = d.sort_index().groupby("setPieceId", as_index=False).first()
+    own = (d.squadName == attacking_squad).values
+    ix = np.where(own, d.startAdjCoordinatesX.values, -d.startAdjCoordinatesX.values)
+    iy = np.where(own, d.startAdjCoordinatesY.values, -d.startAdjCoordinatesY.values)
+    return pd.DataFrame({"setPieceId": d.setPieceId.values,
+                          "playerName": d.playerName.values,
+                          "x_box": -iy, "y_box": ix - 52.5,
+                          "won": d.setPieceSubPhaseFirstTouchWon.values})
+
+
+def _within_diagram_frame(pts):
+    """Drops touch points too far from the box to read as a meaningful dot
+    on it. Corners never needed this - a corner's first touch is always
+    right at the box - but a free kick or throw-in can legitimately be won
+    (headed clear, contested) well out past the box. The diagram's own
+    axis limits are sized generously for internal label/caption placement,
+    not as a "this is near the box" cutoff, so filtering on those let a
+    header won 10m past the box edge still render as a stray dot with a
+    half-clipped label floating in open space. This uses a tighter, purely
+    visual threshold instead - a few metres of margin around the box - and
+    drops anything past it rather than clamping it to the edge, since a
+    clamped dot would misreport a clearance well outside the box as a
+    near-post contest."""
+    if pts is None or len(pts) == 0:
+        return pts
+    xmax = BOX_HW + 3
+    ymin = -BOX_DEPTH - 3
+    return pts[(pts.x_box.abs() <= xmax) & (pts.y_box >= ymin)]
 
 
 # ------------------------------------------------------------------ drawing
@@ -323,45 +500,6 @@ def zone_grid(fig, rect, zones, n, colour, subtitle, side, flick_pts=None):
                 va="top", color=MUTED, fontsize=6.6)
 
 
-def first_contact_diagram(fig, rect, points, subtitle, n_total, side, colour):
-    """Individual first-contact locations for corners from one side, plotted
-    for real rather than binned into a zone percentage - keeps left and
-    right apart the same way the delivery diagrams do, and avoids the
-    left/right conflation a combined-sides zone grid would have (a 'near
-    post' cell means opposite physical sides depending which corner it
-    came from)."""
-    ax = fig.add_axes(rect); ax.axis("off")
-    ax.set_xlim(-BOX_HW - 5, BOX_HW + 5)
-    ax.set_ylim(*_YLIM)
-    ax.set_aspect("equal", adjustable="box")
-    ax.text(0, 4.0, subtitle, ha="center", va="center", color=INK,
-            fontsize=9.5, weight="bold")
-    draw_box_outline(ax, "#4A5568")
-    flag_x = -BOX_HW - 3 if side == "LEFT" else BOX_HW + 3
-    ax.plot([flag_x], [0], marker="o", ms=4, color=colour, zorder=4)
-
-    if points is None or len(points) == 0:
-        ax.text(0, -BOX_DEPTH / 2, "No first-contact data recorded",
-                ha="center", va="center", color=MUTED, fontsize=8.5)
-        return
-    won = points[points.won == True]
-    lost = points[points.won != True]
-    if len(lost):
-        ax.scatter(lost.x_box, lost.y_box, s=36, color=BAD,
-                   edgecolors="#10161F", linewidths=0.7, zorder=5, label="lost")
-    if len(won):
-        ax.scatter(won.x_box, won.y_box, s=36, color=GOOD,
-                   edgecolors="#10161F", linewidths=0.7, zorder=5, label="won")
-    for _, r2 in points.iterrows():
-        ax.text(r2.x_box, r2.y_box - 1.6, surname(r2.playerName), ha="center",
-                va="top", fontsize=5.6, color=INK, weight="bold", zorder=6)
-    ax.legend(loc="upper right", frameon=False, fontsize=6.6, labelcolor=INK,
-              bbox_to_anchor=(0.99, 0.97), handletextpad=0.3)
-    ax.text(0, _LABEL_Y, f"{len(points)} of {n_total} corners have a recorded "
-                        f"first-contact location", ha="center", va="top",
-            color=MUTED, fontsize=6.8)
-
-
 _MINI_YLIM = (-BOX_DEPTH - 2.0, 5.0)
 
 
@@ -406,13 +544,15 @@ def _mini_first_contact(fig, rect, points, player_label, colour):
             va="center", color=INK, fontsize=7.6, weight="bold")
 
 
-def player_first_contact_grid(fig, rect, cp, pts, colour, max_cols=4):
+def player_first_contact_grid(fig, rect, cp, pts, colour, max_cols=4, label="corners"):
     """A separate first-contact diagram per individual player, rather than
     every player's points overlaid on one shared per-side diagram - request
     from the set-piece coach, so an aerial threat's own tendency reads on
-    its own picture instead of being lost among everyone else's dots."""
+    its own picture instead of being lost among everyone else's dots.
+    Generic over any phases frame with the same .side/.playerName/.won/
+    .x_box/.y_box shape - corners, wide free kicks, near-box throw-ins."""
     x0, y0, w, h = rect
-    n_corners = len(cp)
+    n_total = len(cp)
     if pts is None or len(pts) == 0:
         ax = fig.add_axes(rect); ax.axis("off")
         ax.text(0.5, 0.5, "No first-contact data recorded", ha="center",
@@ -431,25 +571,56 @@ def player_first_contact_grid(fig, rect, cp, pts, colour, max_cols=4):
                cell_w * (1 - pad), cell_h * (1 - pad)]
         _mini_first_contact(fig, sub, pts[pts.playerName == player], player, colour)
     fig.text(x0 + w / 2, y0 - 0.022,
-             f"{len(pts)} of {n_corners} corners have a recorded "
+             f"{len(pts)} of {n_total} {label} have a recorded "
              f"first-contact location, across {n} player{'s' if n != 1 else ''}",
              ha="center", va="top", color=MUTED, fontsize=6.8)
 
 
-def taker_breakdown(fig, x, y, cp, side, width=100):
-    """Every individual taker's share on this side, not just the top one."""
-    d = cp[cp.side == side]
-    n = len(d)
-    if n == 0:
-        fig.text(x, y, f"{side.title()}: no corners recorded", ha="left",
-                 va="top", color=INK, fontsize=9)
+def touch_diagram(fig, rect, points, subtitle, n_total, side, colour):
+    """Real touch-location box diagram for one side - the free-kick/
+    throw-in equivalent of the corner pages' first-contact plotting (the
+    function this was originally built as, before it briefly went unused
+    when those pages were text-only). Dot position is where the ball was
+    first touched - effectively where the delivery arrived, since there's
+    no separately verified 'delivery end zone' grid for these two
+    categories the way corners have (see module docstring) - colour is
+    won/lost, so this single diagram covers both delivery location and
+    first contact at once."""
+    ax = fig.add_axes(rect); ax.axis("off")
+    ax.set_xlim(-BOX_HW - 5, BOX_HW + 5)
+    ax.set_ylim(*_YLIM)
+    ax.set_aspect("equal", adjustable="box")
+    ax.text(0, 4.0, subtitle, ha="center", va="center", color=INK,
+            fontsize=9.5, weight="bold")
+    draw_box_outline(ax, "#4A5568")
+    flag_x = -BOX_HW - 3 if side == "LEFT" else BOX_HW + 3
+    ax.plot([flag_x], [0], marker="o", ms=4, color=colour, zorder=4)
+
+    if points is None or len(points) == 0:
+        ax.text(0, -BOX_DEPTH / 2, "No location data recorded",
+                ha="center", va="center", color=MUTED, fontsize=8.5)
         return
-    vc = d.taker.value_counts()
-    parts = ", ".join(f"{surname(name)} {cnt/n*100:.0f}% ({cnt})"
-                      for name, cnt in vc.items())
-    text = f"{side.title()} (n={n}): {parts}"
-    fig.text(x, y, "\n".join(textwrap.wrap(text, width)), ha="left", va="top",
-             color=INK, fontsize=8.6, linespacing=1.5)
+    won = points[points.won == True]
+    lost = points[points.won != True]
+    if len(lost):
+        ax.scatter(lost.x_box, lost.y_box, s=36, color=BAD,
+                   edgecolors="#10161F", linewidths=0.7, zorder=5, label="lost")
+    if len(won):
+        ax.scatter(won.x_box, won.y_box, s=36, color=GOOD,
+                   edgecolors="#10161F", linewidths=0.7, zorder=5, label="won")
+    for _, r2 in points.iterrows():
+        # clip_on=True: matplotlib text isn't clipped to its axes by
+        # default, so a point right at the edge of the (already-filtered)
+        # plotted range can still have its LABEL spill past the box into
+        # neighbouring page real estate otherwise.
+        ax.text(r2.x_box, r2.y_box - 1.6, surname(r2.playerName), ha="center",
+                va="top", fontsize=5.6, color=INK, weight="bold", zorder=6,
+                clip_on=True)
+    ax.legend(loc="upper right", frameon=False, fontsize=6.6, labelcolor=INK,
+              bbox_to_anchor=(0.99, 0.97), handletextpad=0.3)
+    ax.text(0, _LABEL_Y, f"{len(points)} of {n_total} have a recorded "
+                        f"location", ha="center", va="top",
+            color=MUTED, fontsize=6.8)
 
 
 def flick_on_points(cp, pts, side):
@@ -463,6 +634,34 @@ def flick_on_points(cp, pts, side):
 
 def caveat(fig, text, y=0.045):
     fig.text(0.5, y, text, ha="center", va="center", color=MUTED, fontsize=7.4)
+
+
+def taker_rows(d):
+    """Player rows for a 'who delivers' player_table() - every individual
+    taker's share on each side, as table rows instead of wrapped text.
+    Works on any phases frame with .side/.taker columns (corner_phases(),
+    freekick_phases(), throwin_phases() all have them)."""
+    rows = []
+    for side in ("LEFT", "RIGHT"):
+        dd = d[d.side == side]
+        n = len(dd)
+        if n == 0:
+            continue
+        for name, cnt in dd.taker.value_counts().items():
+            rows.append((surname(name), side.title(), int(cnt), f"{cnt/n*100:.0f}%"))
+    return rows
+
+
+
+
+def headline_stat(fig, x, y, d, label, colour):
+    """Goals/xG this sample - a single top-line number so the coach sees
+    how big a threat this phase actually is before reading the detail."""
+    goals = int(d.goals.sum()) if len(d) else 0
+    xg = float(d.xg.sum()) if len(d) else 0.0
+    fig.text(x, y, f"{goals} goal{'s' if goals != 1 else ''} · {xg:.2f} xG "
+                   f"from {len(d)} {label} this sample",
+             ha="left", va="center", color=colour, fontsize=9.5, weight="bold")
 
 
 # --------------------------------------------------------------------- pages
@@ -482,12 +681,12 @@ def page_opposition(fig, cp, pts, n_matches):
 
     fig.text(0.055, 0.575, "Who delivers", ha="left", va="center", color=INK,
              fontsize=11.5, weight="bold")
-    taker_breakdown(fig, 0.075, 0.548, cp, "LEFT")
-    taker_breakdown(fig, 0.075, 0.508, cp, "RIGHT")
+    player_table(fig, [0.075, 0.400, 0.85, 0.150], taker_rows(cp),
+                ["Player", "Side", "N", "Share"])
 
-    fig.text(0.055, 0.450, "First contact — by player", ha="left", va="center",
+    fig.text(0.055, 0.370, "First contact — by player", ha="left", va="center",
              color=INK, fontsize=11.5, weight="bold")
-    player_first_contact_grid(fig, [0.055, 0.190, 0.885, 0.24], cp, pts, OPP_C)
+    player_first_contact_grid(fig, [0.055, 0.130, 0.885, 0.22], cp, pts, OPP_C)
 
     caveat(fig, f"n={n} corners from {n_matches} matches. Enough to spot "
                 f"a preference, not yet a settled pattern.", y=0.070)
@@ -511,38 +710,21 @@ def _defensive_header_winners(ev, corner_ids, squad):
     return d.playerName.value_counts()
 
 
-def page_ours(fig, our_cp, our_pts, opp_def_cp, opp_ev, n_matches, n_opp):
-    title(fig, "CORNERS — OURS", f"{US} attacking, last {n_matches} matches")
-    n = len(our_cp)
-
-    fig.text(0.055, 0.910, "Where we deliver", ha="left", va="center",
-             color=INK, fontsize=11.5, weight="bold")
-    zone_grid(fig, [0.06, 0.650, 0.40, 0.24], our_cp[our_cp.side == "LEFT"].zone,
-             len(our_cp[our_cp.side == "LEFT"]), TEAM_C, "Corners from the left", "LEFT",
-             flick_on_points(our_cp, our_pts, "LEFT"))
-    zone_grid(fig, [0.54, 0.650, 0.40, 0.24], our_cp[our_cp.side == "RIGHT"].zone,
-             len(our_cp[our_cp.side == "RIGHT"]), TEAM_C, "Corners from the right", "RIGHT",
-             flick_on_points(our_cp, our_pts, "RIGHT"))
-
-    fig.text(0.055, 0.598, "Who delivers", ha="left", va="center", color=INK,
-             fontsize=11.5, weight="bold")
-    taker_breakdown(fig, 0.075, 0.571, our_cp, "LEFT")
-    taker_breakdown(fig, 0.075, 0.531, our_cp, "RIGHT")
-
-    fig.text(0.055, 0.470, "First contact", ha="left", va="center",
-             color=INK, fontsize=11.5, weight="bold")
-    first_contact_diagram(fig, [0.06, 0.225, 0.40, 0.240],
-                          our_pts[our_pts.side == "LEFT"], "Corners from the left",
-                          len(our_cp[our_cp.side == "LEFT"]), "LEFT", TEAM_C)
-    first_contact_diagram(fig, [0.54, 0.225, 0.40, 0.240],
-                          our_pts[our_pts.side == "RIGHT"], "Corners from the right",
-                          len(our_cp[our_cp.side == "RIGHT"]), "RIGHT", TEAM_C)
-
-    # opponent defensive intel, for when we attack
-    fig.text(0.055, 0.185, f"What we know about {OPPONENT} defending corners",
-             ha="left", va="center", color=INK, fontsize=11.5, weight="bold")
-
+def page_corner_defence(fig, opp_def_cp, opp_ev, n_opp):
+    """Everything the old 'CORNERS — OURS' page had beyond our own
+    delivery/takers/first-contact, which the set-piece coach dropped - this
+    report scouts the opponent, and our own routine wasn't earning its page
+    back. What's here now: how big a threat their conceded corners already
+    are (goals/xG), then the same defensive scouting cards as before, plus
+    a second-ball note using the freed space."""
+    title(fig, "CORNERS — HOW THEY DEFEND",
+         f"{OPPONENT} defending, last {n_opp} matches")
     nd = len(opp_def_cp)
+
+    headline_stat(fig, 0.055, 0.885, opp_def_cp, "corners conceded", "#FF2D2D")
+
+    fig.text(0.055, 0.790, f"What we know about {OPPONENT} defending corners",
+             ha="left", va="center", color=INK, fontsize=12.5, weight="bold")
     header_wins = _defensive_header_winners(
         opp_ev, opp_def_cp.setPieceId.unique() if nd else [], OPPONENT)
     if len(header_wins):
@@ -584,36 +766,127 @@ def page_ours(fig, our_cp, our_pts, opp_def_cp, opp_ev, n_matches, n_opp):
     else:
         vuln_txt = f"No corners conceded in their last {n_opp} matches"
 
-    ax = fig.add_axes([0.055, 0.100, 0.885, 0.075]); ax.axis("off")
-    ax.set_xlim(0, 1); ax.set_ylim(0, 1)
-    for i, (kicker, body, colour) in enumerate([
-            ("OPP STRONGEST HEADER", header_txt, "#FF2D2D"),
-            ("THEIR MOST VULNERABLE AREA", vuln_txt, "#8FE388")]):
-        x0 = i * 0.505
-        ax.add_patch(Rectangle((x0, 0.02), 0.48, 0.96, fc=PANEL, ec=GRID, lw=0.9))
-        ax.text(x0 + 0.03, 0.78, kicker, ha="left", va="top", color=colour,
-                fontsize=8, weight="bold")
-        ax.text(x0 + 0.03, 0.52, body, ha="left", va="top", color=INK,
-                fontsize=8.2, wrap=True)
+    st = opp_def_cp[opp_def_cp.second_touch_player.notna()] if nd else opp_def_cp
+    if len(st):
+        won_pct = float((st.second_touch_won == True).mean()) * 100
+        top = st.second_touch_player.value_counts()
+        second_txt = (f"Recorded on {len(st)} of their conceded corners — "
+                      f"won back {won_pct:.0f}% of the time, most often by "
+                      f"{surname(top.index[0])} ({int(top.iloc[0])})")
+    else:
+        second_txt = "No second-ball contests recorded"
 
-    caveat(fig, f"Our corners: {n} from {n_matches} matches. Their "
-                f"defensive corners: {nd} from {n_opp} matches.", y=0.028)
+    ax = fig.add_axes([0.055, 0.480, 0.885, 0.310]); ax.axis("off")
+    ax.set_xlim(0, 1); ax.set_ylim(0, 1)
+    w = 0.315
+    # matplotlib's own wrap=True wraps to the whole figure width, not the
+    # axes/panel it's drawn in - with three narrower panels (this used to
+    # be two) that bled text across the panel boundary, so this wraps by
+    # hand at a character width sized to the panel instead, the same way
+    # every other multi-line block on these pages already does.
+    for i, (kicker, body, colour) in enumerate([
+            ("STRONGEST HEADER", header_txt, "#FF2D2D"),
+            ("MOST VULNERABLE AREA", vuln_txt, "#8FE388"),
+            ("SECOND BALL", second_txt, BARC)]):
+        x0 = i * (w + 0.02)
+        ax.add_patch(Rectangle((x0, 0.02), w, 0.96, fc=PANEL, ec=GRID, lw=0.9))
+        ax.text(x0 + 0.035, 0.86, kicker, ha="left", va="top", color=colour,
+                fontsize=9, weight="bold")
+        ax.text(x0 + 0.035, 0.68, "\n".join(textwrap.wrap(body, 28)),
+                ha="left", va="top", color=INK, fontsize=9, linespacing=1.4)
+
+    # The "MOST VULNERABLE AREA" card above names a zone in words - this is
+    # the same box-grid diagram CORNERS — OPPOSITION uses for "where they
+    # deliver", pointed at the corners THEY conceded instead, so the named
+    # zone reads as a picture too, not just a sentence.
+    fig.text(0.055, 0.440, "Where it's targeted", ha="left", va="center",
+             color=INK, fontsize=12.5, weight="bold")
+    zone_grid(fig, [0.06, 0.190, 0.40, 0.22], opp_def_cp[opp_def_cp.side == "LEFT"].zone,
+             len(opp_def_cp[opp_def_cp.side == "LEFT"]), "#8FE388",
+             "Conceded from the left", "LEFT")
+    zone_grid(fig, [0.54, 0.190, 0.40, 0.22], opp_def_cp[opp_def_cp.side == "RIGHT"].zone,
+             len(opp_def_cp[opp_def_cp.side == "RIGHT"]), "#8FE388",
+             "Conceded from the right", "RIGHT")
+
+    caveat(fig, f"Their defensive corners: {nd} from {n_opp} matches.", y=0.055)
+
+
+def _setpiece_opposition_body(fig, d, pts, colour, label, n_matches):
+    """Shared layout for the wide-free-kick and near-box-throw-in pages -
+    same visual language as CORNERS — OPPOSITION: real touch-location box
+    diagrams split by side for 'where they deliver' (dots, not zone-grid
+    percentages - see module docstring on why these two categories don't
+    get the corner grid), a player_table() for who takes it, and the same
+    per-player first-contact grid corners uses. `pts` is _touch_points()
+    already joined onto `d` for side."""
+    headline_stat(fig, 0.055, 0.900, d, label, colour)
+
+    fig.text(0.055, 0.855, "Where they deliver", ha="left", va="center",
+             color=INK, fontsize=12, weight="bold")
+    touch_diagram(fig, [0.06, 0.600, 0.40, 0.24], pts[pts.side == "LEFT"],
+                 "From the left", len(d[d.side == "LEFT"]), "LEFT", colour)
+    touch_diagram(fig, [0.54, 0.600, 0.40, 0.24], pts[pts.side == "RIGHT"],
+                 "From the right", len(d[d.side == "RIGHT"]), "RIGHT", colour)
+
+    fig.text(0.055, 0.545, "Who delivers", ha="left", va="center", color=INK,
+             fontsize=12, weight="bold")
+    player_table(fig, [0.075, 0.370, 0.85, 0.150], taker_rows(d),
+                ["Player", "Side", "N", "Share"])
+
+    fig.text(0.055, 0.340, "First contact — by player", ha="left",
+             va="center", color=INK, fontsize=12, weight="bold")
+    player_first_contact_grid(fig, [0.055, 0.130, 0.885, 0.185], d, pts,
+                              colour, label=label)
+
+    second = pts_second_ball_line(d)
+    fig.text(0.5, 0.095, second, ha="center", va="center", color=MUTED,
+             fontsize=7.2)
+
+    caveat(fig, f"n={len(d)} {label} from {n_matches} matches. Enough to "
+                f"spot a preference, not yet a settled pattern.", y=0.055)
+
+
+def pts_second_ball_line(d):
+    """One-line second-ball summary, for when there's no room left on the
+    page for a full section (see _setpiece_opposition_body)."""
+    st = d[d.second_touch_player.notna()]
+    if len(st) == 0:
+        return "No second-ball contests recorded."
+    won_pct = float((st.second_touch_won == True).mean()) * 100
+    top = st.second_touch_player.value_counts()
+    return (f"Second ball: recorded on {len(st)}, won back {won_pct:.0f}% "
+           f"of the time — most involved: {surname(top.index[0])} "
+           f"({int(top.iloc[0])}).")
+
+
+def page_freekicks(fig, d, pts, n_matches):
+    title(fig, "WIDE FREE KICKS — OPPOSITION",
+         f"{OPPONENT} attacking, last {n_matches} matches")
+    _setpiece_opposition_body(fig, d, pts, OPP_C, "wide free kicks", n_matches)
+
+
+def page_throwins(fig, d, pts, n_matches):
+    title(fig, "THROW-INS (NEAR THE BOX) — OPPOSITION",
+         f"{OPPONENT} attacking, last {n_matches} matches")
+    _setpiece_opposition_body(fig, d, pts, OPP_C, "near-box throw-ins", n_matches)
 
 
 def main():
     apply_style()
     opp = _load_side(OPP_CACHES)
-    ours = _load_side(OUR_CACHES)
 
     n_opp_matches = opp["ev"].matchId.nunique() if opp["ev"] is not None else 0
-    n_our_matches = ours["ev"].matchId.nunique() if ours["ev"] is not None else 0
 
     opp_cp = corner_phases(opp["setpieces"], attacking=OPPONENT)
-    our_cp = corner_phases(ours["setpieces"], attacking=US)
     opp_def_cp = corner_phases(opp["setpieces"], defending=OPPONENT)
-
     opp_pts = _first_touch_points(opp["ev"], OPPONENT)
-    our_pts = _first_touch_points(ours["ev"], US)
+
+    opp_fk = freekick_phases(opp["setpieces"], attacking=OPPONENT)
+    opp_ti = throwin_phases(opp["setpieces"], attacking=OPPONENT)
+    opp_fk_pts = _within_diagram_frame(_touch_points(opp["ev"], OPPONENT, ["FREE_KICK"]).merge(
+        opp_fk[["setPieceId", "side"]], on="setPieceId", how="inner"))
+    opp_ti_pts = _within_diagram_frame(_touch_points(opp["ev"], OPPONENT, ["THROW_IN"]).merge(
+        opp_ti[["setPieceId", "side"]], on="setPieceId", how="inner"))
 
     with PdfPages(OUT) as pdf:
         fig = plt.figure(figsize=(PAGE_W, PAGE_H), facecolor=BG)
@@ -621,11 +894,18 @@ def main():
         pdf.savefig(fig, facecolor=BG); plt.close(fig)
 
         fig = plt.figure(figsize=(PAGE_W, PAGE_H), facecolor=BG)
-        page_ours(fig, our_cp, our_pts, opp_def_cp, opp["ev"],
-                 n_our_matches, n_opp_matches)
+        page_corner_defence(fig, opp_def_cp, opp["ev"], n_opp_matches)
         pdf.savefig(fig, facecolor=BG); plt.close(fig)
 
-    print(f"wrote {OUT}  (2 pages)")
+        fig = plt.figure(figsize=(PAGE_W, PAGE_H), facecolor=BG)
+        page_freekicks(fig, opp_fk, opp_fk_pts, n_opp_matches)
+        pdf.savefig(fig, facecolor=BG); plt.close(fig)
+
+        fig = plt.figure(figsize=(PAGE_W, PAGE_H), facecolor=BG)
+        page_throwins(fig, opp_ti, opp_ti_pts, n_opp_matches)
+        pdf.savefig(fig, facecolor=BG); plt.close(fig)
+
+    print(f"wrote {OUT}  (4 pages)")
 
 
 if __name__ == "__main__":

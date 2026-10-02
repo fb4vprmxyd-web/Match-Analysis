@@ -25,7 +25,6 @@ from report_config import (apply_style, TEAM, OPP, COMPETITION, MATCHDAY,
                            VENUE_DATE, MATCH_ID, surname)
 import report_metrics as M
 import report_pages as P
-import coach_brief as CB
 import coach_brief_engine as CBE
 import db as DB
 import manual_corrections as MC
@@ -52,8 +51,6 @@ def load():
         setp = MC.apply(setp, int(setp.matchId.iloc[0]))
     ss_path = os.path.join(CACHE, "ss.parquet")
     squad_sums = pd.read_parquet(ss_path) if os.path.exists(ss_path) else None
-    fm_path = os.path.join(CACHE, "fm.parquet")
-    formations = pd.read_parquet(fm_path) if os.path.exists(fm_path) else None
     sc_path = os.path.join(CACHE, "squad_scores.parquet")
     scores = pd.read_parquet(sc_path) if os.path.exists(sc_path) else None
     shirts = {}
@@ -65,7 +62,7 @@ def load():
                 if pd.notna(r.get("shirtNumber")):
                     shirts[r.playerName] = int(r.shirtNumber)
     return (ev, ps, season_sq, season_pl, shirts, setp, squad_sums,
-            scores, formations)
+            scores)
 
 
 def ordinal(n: int) -> str:
@@ -339,12 +336,14 @@ def match_score(ev):
 
 def main():
     apply_style()
-    (ev, ps, season_sq, season_pl, shirts, setp, squad_sums, scores,
-     formations) = load()
+    (ev, ps, season_sq, season_pl, shirts, setp, squad_sums, scores) = load()
 
     home, away, hg, ag = match_score(ev)
     score = f"{hg} - {ag}"
     score_line = f"{home} ({hg}) vs ({ag}) {away}"
+    team_goals, opp_goals = (hg, ag) if home == TEAM else (ag, hg)
+    result_word = ("won" if team_goals > opp_goals else
+                   "lost" if team_goals < opp_goals else "drew")
 
     rows = M.team_stats(ev, ps, TEAM, OPP, scores)
     tbl = M.player_table(ev, ps, TEAM)
@@ -357,22 +356,20 @@ def main():
     su = pd.read_parquet(su_path) if os.path.exists(su_path) else None
     first_change, changes = M.substitution_summary(su, TEAM)
     review = M.performance_review(ev, ps, squad_sums, scores, setp, tbl,
-                                  TEAM, OPP)
-    # Postgres-backed checks (see webapp.py / coach_brief_checks) take
-    # priority when they exist for this match - that's the coach's actual
-    # saved brief for THIS game. Falls back to the old hardcoded
-    # coach_brief.py file otherwise, which is only ever written against
-    # whichever match was built most recently (see its own docstring) - so
-    # using it for a different match's build would quietly grade the wrong
-    # instructions. Skip the page entirely if neither source has anything.
-    include_brief = not os.environ.get("PMR_SKIP_COACH_BRIEF")
-    brief = None
-    if include_brief:
-        if DB.available() and DB.load_coach_brief_checks(MATCH_ID):
-            brief = CBE.evaluate_from_db(ev, ps, squad_sums, scores, setp,
-                                         TEAM, OPP, MATCH_ID)
-        else:
-            brief = CB.evaluate(ev, ps, squad_sums, scores, setp, formations, TEAM, OPP)
+                                  TEAM, OPP, result_word)
+    # Postgres-backed checks (see webapp.py / coach_brief_checks) are the
+    # only source now - the coach's assistant's actual saved brief for THIS
+    # match. No more falling back to the old hardcoded coach_brief.py file:
+    # that file is only ever written against whichever match it was last
+    # hand-edited for, and silently grading a different match against it
+    # produced a page that looked fine but checked instructions nobody gave
+    # for this game - a real risk now that run.py runs unattended on a
+    # schedule rather than always under a human's eye. Skip the page
+    # entirely when there's nothing in Postgres yet, rather than guessing.
+    include_brief = (DB.available() and bool(DB.load_coach_brief_checks(MATCH_ID))
+                     and not os.environ.get("PMR_SKIP_COACH_BRIEF"))
+    brief = (CBE.evaluate_from_db(ev, ps, squad_sums, scores, setp, TEAM, OPP, MATCH_ID)
+            if include_brief else None)
 
     pages = [
         lambda f: P.page_cover(f, TEAM, OPP, COMPETITION, MATCHDAY,

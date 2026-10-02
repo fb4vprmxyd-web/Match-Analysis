@@ -144,3 +144,90 @@ def style_bar_axis(ax, ylabel=None, label_size=8.5, tick_size=7.5):
     ax.set_axisbelow(True)
     if ylabel:
         ax.set_ylabel(ylabel, fontsize=label_size, color=INK, weight="bold")
+
+
+def stat_table(fig, rect, rows, left_label, right_label, header=None,
+              left_colour=None, right_colour=None):
+    """Picture-style stat table: a bold section header, a team-name sub-
+    header row, then label / left-value / right-value rows with thin grey
+    dividers - replaces a bar-chart comparison. Shared across every report
+    in this project (pre-match, post-match) since it has no dependency on
+    any one report's own config.
+
+    `rows` is a list of (label, left_str, right_str) or (label, left_str,
+    right_str, left_pct, right_pct) - the last two, if given, render as a
+    small grey annotation next to the value (e.g. "29%").
+    """
+    from matplotlib.patches import Rectangle
+    ax = fig.add_axes(rect); ax.axis("off")
+    ax.set_xlim(0, 1); ax.set_ylim(0, 1)
+    top = 1.0
+    if header:
+        ax.text(0, top, header, ha="left", va="top", color=INK,
+                fontsize=18, weight="bold")
+        top -= 0.145
+    ax.text(0.64, top, left_label, ha="center", va="top",
+            color=left_colour or INK, fontsize=10.5, weight="bold")
+    ax.text(0.90, top, right_label, ha="center", va="top",
+            color=right_colour or INK, fontsize=10.5, weight="bold")
+    top -= 0.075
+    ax.plot([0, 1], [top, top], color=GRID, lw=1.1)
+    n = len(rows)
+    row_h = top / n
+    for i, row in enumerate(rows):
+        label, lv, rv = row[0], row[1], row[2]
+        lpct = row[3] if len(row) > 3 else None
+        rpct = row[4] if len(row) > 4 else None
+        y = top - (i + 0.5) * row_h
+        if i % 2 == 1:
+            ax.add_patch(Rectangle((-0.02, top - (i + 1) * row_h), 1.04, row_h,
+                                   fc=PANEL, ec="none", zorder=0))
+        ax.text(0.0, y, label, ha="left", va="center", color=INK, fontsize=9.6)
+        ax.text(0.64, y, str(lv), ha="center", va="center", color=INK,
+                fontsize=9.6, weight="bold")
+        ax.text(0.90, y, str(rv), ha="center", va="center", color=INK,
+                fontsize=9.6, weight="bold")
+        if lpct:
+            ax.text(0.735, y, lpct, ha="left", va="center", color=MUTED, fontsize=7.4)
+        if rpct:
+            ax.text(0.995, y, rpct, ha="left", va="center", color=MUTED, fontsize=7.4)
+        if i < n - 1:
+            liney = top - (i + 1) * row_h
+            ax.plot([0, 1], [liney, liney], color=GRID, lw=0.7)
+
+
+def player_table(fig, rect, rows, col_labels, header=None):
+    """Same picture-style row/divider table as stat_table(), for a list of
+    players rather than a two-team comparison. `rows` is a list of tuples
+    matching col_labels (first column is always the player name,
+    left-aligned; the rest are right-aligned under their header)."""
+    from matplotlib.patches import Rectangle
+    ax = fig.add_axes(rect); ax.axis("off")
+    ax.set_xlim(0, 1); ax.set_ylim(0, 1)
+    top = 1.0
+    if header:
+        ax.text(0, top, header, ha="left", va="top", color=INK,
+                fontsize=13, weight="bold")
+        top -= 0.115
+    ncols = len(col_labels)
+    col_x = [0.0] + [1.0 - (ncols - 1 - i) * (0.62 / max(ncols - 1, 1))
+                     for i in range(1, ncols)]
+    for j, lab in enumerate(col_labels):
+        ax.text(col_x[j], top, lab, ha=("left" if j == 0 else "right"),
+                va="top", color=MUTED, fontsize=8.2, weight="bold")
+    top -= 0.058
+    ax.plot([0, 1], [top, top], color=GRID, lw=1.0)
+    n = len(rows) or 1
+    row_h = top / n
+    for i, row in enumerate(rows):
+        y = top - (i + 0.5) * row_h
+        if i % 2 == 1:
+            ax.add_patch(Rectangle((-0.02, top - (i + 1) * row_h), 1.04, row_h,
+                                   fc=PANEL, ec="none", zorder=0))
+        for j, val in enumerate(row):
+            ax.text(col_x[j], y, str(val), ha=("left" if j == 0 else "right"),
+                    va="center", color=INK, fontsize=8.8,
+                    weight=("bold" if j == 0 else "normal"))
+        if i < n - 1:
+            liney = top - (i + 1) * row_h
+            ax.plot([0, 1], [liney, liney], color=GRID, lw=0.6)

@@ -34,8 +34,8 @@ def main():
     import build_report as BR
     import report_metrics as M
 
-    (ev, ps, season_sq, season_pl, shirts, setp, squad_sums, scores,
-     formations) = BR.load()
+    (ev, ps, season_sq, season_pl, shirts, setp, squad_sums,
+     scores) = BR.load()
 
     home, away, hg, ag = BR.match_score(ev)
     og = ev[ev.actionType == "OWN_GOAL"]

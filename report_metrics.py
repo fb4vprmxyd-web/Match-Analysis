@@ -602,12 +602,17 @@ def expected_points(scores: pd.DataFrame, team: str, opp: str):
 
 
 def performance_review(ev, psum, squad_sums, scores, setp, tbl, team, opp,
-                       max_items=6):
+                       result_word, max_items=6):
     """Interpretation layer: what held up, what needs work.
 
     Every entry is gated on a condition computed from the match, so the verdict
     changes with the data instead of being prose pinned to one game. Kept light
     on figures deliberately — the numbers are on the eight pages before this.
+
+    Also returns a `how_it_went` paragraph - a plain-language scene-setter
+    built from the same signals this function already computes for pros/
+    cons (territory, chance quality, duels, final-third fluency), so it
+    stays a real read of the match rather than a single generic sentence.
     """
     S = squad_sums.set_index("squadName")
     C = scores.set_index("squadName") if scores is not None else None
@@ -702,30 +707,27 @@ def performance_review(ev, psum, squad_sums, scores, setp, tbl, team, opp,
         if aw + al >= 8:
             if ar > 0.55:
                 pros.append(("Won the aerial battle",
-                             f"{int(aw)} of {int(aw+al)} aerial duels won "
-                             f"({ar*100:.0f}%) - a clear edge in the air, "
-                             f"regardless of how the ground contest went."))
+                             "A clear edge in the air, regardless of how the "
+                             "ground contest went."))
             elif ar < 0.45:
                 cons.append(("Beaten in the air",
-                             f"Only {int(aw)} of {int(aw+al)} aerial duels won "
-                             f"({ar*100:.0f}%). Worth addressing on its own, "
-                             f"separately from how the ground duels went."))
+                             "Beaten in the air often enough for it to be a "
+                             "pattern rather than a one-off. Worth addressing "
+                             "on its own, separately from how the ground "
+                             "duels went."))
         if gw + gl >= 8:
             if gr > 0.55:
                 pros.append(("Won it on the ground",
-                             f"{int(gw)} of {int(gw+gl)} ground duels won "
-                             f"({gr*100:.0f}%) - a clear edge in the tackles "
-                             f"and contested balls, regardless of the aerial "
-                             f"picture."))
+                             "A clear edge in the tackles and contested "
+                             "balls, regardless of the aerial picture."))
             elif gr < 0.45:
                 cons.append(("Beaten on the ground",
-                             f"Only {int(gw)} of {int(gw+gl)} ground duels won "
-                             f"({gr*100:.0f}%). The side is losing the "
-                             f"individual battles that decide second balls "
-                             f"and loose-ball recoveries."))
+                             "The side is losing the individual battles that "
+                             "decide second balls and loose-ball recoveries."))
 
     # --- final third entry
     pf = passes_into_final_third(ev, team)
+    rate = None
     if len(pf):
         rate = (pf.result == "SUCCESS").sum() / len(pf)
         if rate < 0.55:
@@ -762,11 +764,11 @@ def performance_review(ev, psum, squad_sums, scores, setp, tbl, team, opp,
             # deliberate gap between the two so a borderline 32-33% game stays
             # silent rather than being called a clean success.
             pros.append(("Kept the middle shut",
-                         f"Only {centre_share*100:.0f}% of the opposition's "
-                         f"progression came through the centre, and no single "
-                         f"channel dominated - their threat was spread thin "
-                         f"across the width of the pitch rather than punching "
-                         f"a hole down the middle."))
+                         "Only a small share of the opposition's progression "
+                         "came through the centre, and no single channel "
+                         "dominated - their threat was spread thin across the "
+                         "width of the pitch rather than punching a hole down "
+                         "the middle."))
 
     # --- set pieces
     # Both branches need an ABSOLUTE floor as well as a ratio. A ratio alone
@@ -785,12 +787,12 @@ def performance_review(ev, psum, squad_sums, scores, setp, tbl, team, opp,
             if share >= SETPIECE_CONCENTRATION_THRESHOLD:
                 goal_txt = " that produced a goal" if goal else ""
                 cons.append(("A costly set-piece moment",
-                             f"{a:.2f} xG conceded from dead balls, but "
-                             f"{share*100:.0f}% of it came from a single "
-                             f"{cat.lower()} phase{goal_txt}. That is one "
-                             f"costly moment, not a repeated pattern - a "
-                             f"different problem from leaking chances across "
-                             f"several deliveries."))
+                             f"Dead balls conceded a real chance, but nearly "
+                             f"all of it came from a single {cat.lower()} "
+                             f"phase{goal_txt}. That is one costly moment, "
+                             f"not a repeated pattern - a different problem "
+                             f"from leaking chances across several "
+                             f"deliveries."))
             else:
                 cons.append(("Set pieces were a soft spot",
                              "Dead balls against were the richest source of "
@@ -801,8 +803,8 @@ def performance_review(ev, psum, squad_sums, scores, setp, tbl, team, opp,
             if share >= SETPIECE_CONCENTRATION_THRESHOLD:
                 goal_txt = " that produced a goal" if goal else ""
                 pros.append(("One big set-piece moment",
-                             f"{f:.2f} xG created from dead balls, but "
-                             f"{share*100:.0f}% of it came from a single "
+                             f"A real chance created from dead balls, but "
+                             f"nearly all of it came from a single "
                              f"{cat.lower()} phase{goal_txt} - worth having, "
                              f"but not yet evidence of a repeatable set-piece "
                              f"routine."))
@@ -822,12 +824,13 @@ def performance_review(ev, psum, squad_sums, scores, setp, tbl, team, opp,
             detail = ""
             if len(worst):
                 w = worst.iloc[0]
-                detail = (f" {int(w.phases)} {w.grp.replace('_',' ').lower()}s "
-                          f"alone yielded {w.xg:.2f}.")
+                detail = (f" Even the most-used delivery, "
+                          f"{w.grp.replace('_',' ').lower()}s, barely "
+                          f"produced anything.")
             cons.append(("Our own set pieces produced nothing",
-                         f"{our_phases} set-piece phases generated barely any "
-                         f"threat at all.{detail} That is a lot of possession in "
-                         f"good areas being handed back."))
+                         f"Plenty of set-piece phases generated barely any "
+                         f"threat at all.{detail} That is a lot of possession "
+                         f"in good areas being handed back."))
 
     # --- crossing
     cr = crosses_and_cutbacks(ev, team)
@@ -876,11 +879,70 @@ def performance_review(ev, psum, squad_sums, scores, setp, tbl, team, opp,
                          "when the ball is used decisively."))
         if bpdr_share >= 0.25:
             pros.append((f"A clear focal point in {surname(topr.playerName)}",
-                         f"The largest single share of Orient's progression - "
-                         f"about {bpdr_share*100:.0f}% - ran through him as the "
-                         f"receiver. The side knows where its out-ball is."))
+                         "The largest single share of Orient's progression "
+                         "ran through him as the receiver. The side knows "
+                         "where its out-ball is."))
 
-    return pros[:max_items], cons[:max_items]
+    # --- how it went: a plain-language scene-setter for the Performance
+    # Review page, reusing the same signals already computed above
+    # (territory, chance quality, duels, final-third fluency) rather than
+    # a single generic result sentence - every branch below always
+    # produces something, so the paragraph length doesn't depend on how
+    # eventful the match was.
+    verb = {"won": "beat", "lost": "lost to", "drew": "drew with"}[result_word]
+    sentences = [f"{team} {verb} {opp}."]
+
+    if tilt is not None:
+        if tilt > 0.55:
+            sentences.append(f"{team} had the better share of the game, "
+                             f"spending long spells in the opposition's half.")
+        elif tilt < 0.45:
+            sentences.append(f"{opp} had the better share of the game, and "
+                             f"{team} spent more time defending than attacking.")
+        else:
+            sentences.append("Territory was shared fairly evenly between "
+                             "the two sides.")
+
+    if xg - oxg >= 0.20:
+        sentences.append("That control showed up in the chances too, with "
+                         "the better and more dangerous openings falling to "
+                         f"{team}.")
+    elif oxg - xg >= 0.20:
+        sentences.append(f"{opp} created the better chances of the two "
+                         f"sides, even when they didn't have the run of play.")
+    else:
+        sentences.append("Chances were shared fairly evenly, without either "
+                         "side stringing together a run of clear openings.")
+
+    if 0.45 <= ar <= 0.55 and 0.45 <= gr <= 0.55:
+        sentences.append("Physically it was an even contest, with neither "
+                         "side dominating the challenges.")
+    elif ar < 0.45 and gr < 0.45:
+        sentences.append(f"{team} came off second best in the physical "
+                         f"battles, beaten in the air and on the ground.")
+    elif ar > 0.55 and gr > 0.55:
+        sentences.append(f"{team} won the physical battle, coming out on "
+                         f"top in the air and on the ground.")
+    else:
+        sentences.append("The physical side of the game was mixed, with "
+                         "each side having their moments.")
+
+    if rate is None or 0.55 <= rate <= 0.65:
+        sentences.append("Moving the ball into the final third was a "
+                         "routine, unremarkable part of the game for both "
+                         "sides.")
+    elif rate < 0.55:
+        sentences.append("Getting the ball into dangerous areas was a "
+                         "struggle, with a lot of promising moves breaking "
+                         "down in the final third.")
+    else:
+        sentences.append("When the ball reached the final third it usually "
+                         "stuck, rather than being given straight back.")
+
+    sentences.append("Here's a closer look at what stood out.")
+    how_it_went = " ".join(sentences)
+
+    return pros[:max_items], cons[:max_items], how_it_went
 
 
 def defensive_player_table(ev: pd.DataFrame, psum: pd.DataFrame,

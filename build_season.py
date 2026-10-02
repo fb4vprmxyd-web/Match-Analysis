@@ -310,15 +310,13 @@ def impact_table(players):
     return i.sort_values("xt90", ascending=False)
 
 
-def single_match_extremes(players):
+def best_single_match_performances(players):
     if not len(players):
-        return pd.DataFrame(), pd.DataFrame()
+        return pd.DataFrame()
     s = players.copy()
     s["mins"] = s.playDuration / 60
     s = s[s.mins >= MIN_MINUTES_SINGLE]
-    best = s.sort_values("PXT_ATTACK", ascending=False).head(5)
-    worst = s.sort_values("PXT_ATTACK", ascending=True).head(5)
-    return best, worst
+    return s.sort_values("PXT_ATTACK", ascending=False).head(5)
 
 
 # ---------------------------------------------------------------- rendering
@@ -442,9 +440,8 @@ def impact_rows(i):
     return "".join(rows)
 
 
-def extreme_rows(df, good):
+def best_rows_html(df):
     rows = []
-    cls = "good" if good else "bad"
     for _, r in df.iterrows():
         rows.append(f'''
       <tr>
@@ -452,7 +449,7 @@ def extreme_rows(df, good):
         <td class="mut">{pos(r.position)}</td>
         <td class="mut">v {html.escape(r.opponent)}</td>
         <td class="mut">{fmt_date(r.date)}</td>
-        <td class="num {cls}">{f2(r.PXT_ATTACK)}</td>
+        <td class="num good">{f2(r.PXT_ATTACK)}</td>
         <td class="num mut">{r.playDuration/60:.0f}’</td>
       </tr>''')
     return "".join(rows)
@@ -509,8 +506,6 @@ PAGE = """<!DOCTYPE html>
   .pill {{ display: inline-block; padding: 2px 8px; border-radius: 5px; font-size: 11px; font-weight: 800; }}
   .comp-tag {{ font-size: 10.5px; color: var(--muted); border: 1px solid var(--grid); border-radius: 5px; padding: 2px 6px; }}
   .bar {{ display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 8px; }}
-  .split {{ display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }}
-  @media (max-width: 800px) {{ .split {{ grid-template-columns: 1fr; }} }}
   .pctl-panel {{ background: var(--panel); border: 1px solid var(--grid); border-radius: 10px; padding: 6px 18px; max-width: 760px; }}
   .pctl-row {{ display: flex; align-items: center; gap: 14px; padding: 12px 0; border-bottom: 1px solid var(--grid); }}
   .pctl-row:last-child {{ border-bottom: none; }}
@@ -620,24 +615,12 @@ PAGE = """<!DOCTYPE html>
   </section>
 
   <section>
-    <h2>Best &amp; Worst Individual Performances</h2>
+    <h2>Best Individual Performances</h2>
     <p class="desc">Single-match xT, minimum {min_single} minutes played.</p>
-    <div class="split">
-      <div>
-        <p class="mut" style="font-size:12px;text-transform:uppercase;letter-spacing:0.05em;margin:0 0 8px;">Best</p>
-        <div class="table-wrap"><table>
-          <thead><tr><th>Player</th><th>Pos</th><th>Opponent</th><th>Date</th><th class="num">xT</th><th class="num">Mins</th></tr></thead>
-          <tbody>{best_rows}</tbody>
-        </table></div>
-      </div>
-      <div>
-        <p class="mut" style="font-size:12px;text-transform:uppercase;letter-spacing:0.05em;margin:0 0 8px;">Worst</p>
-        <div class="table-wrap"><table>
-          <thead><tr><th>Player</th><th>Pos</th><th>Opponent</th><th>Date</th><th class="num">xT</th><th class="num">Mins</th></tr></thead>
-          <tbody>{worst_rows}</tbody>
-        </table></div>
-      </div>
-    </div>
+    <div class="table-wrap"><table>
+      <thead><tr><th>Player</th><th>Pos</th><th>Opponent</th><th>Date</th><th class="num">xT</th><th class="num">Mins</th></tr></thead>
+      <tbody>{best_rows}</tbody>
+    </table></div>
   </section>
 
   <div class="note">
@@ -687,7 +670,7 @@ def main():
 
     m_table = minutes_table(players)
     i_table = impact_table(players)
-    best, worst = single_match_extremes(players)
+    best = best_single_match_performances(players)
 
     n_player_matches = players.matchId.nunique() if len(players) else 0
     missing_note = (f" No pulled data yet for: {', '.join(sorted(set(missing)))}."
@@ -714,8 +697,7 @@ def main():
         min_roll=MIN_MINUTES_ROLLING,
         impact_rows=impact_rows(i_table) if len(i_table) else '<tr><td colspan="10" class="mut">Not enough minutes pulled yet.</td></tr>',
         min_single=MIN_MINUTES_SINGLE,
-        best_rows=extreme_rows(best, True) if len(best) else '<tr><td colspan="6" class="mut">—</td></tr>',
-        worst_rows=extreme_rows(worst, False) if len(worst) else '<tr><td colspan="6" class="mut">—</td></tr>',
+        best_rows=best_rows_html(best) if len(best) else '<tr><td colspan="6" class="mut">—</td></tr>',
     )
 
     OUT.write_text(html_out)

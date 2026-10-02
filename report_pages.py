@@ -1,15 +1,66 @@
 """Page renderers - one function per page of the debrief."""
 
+import textwrap
+
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-from matplotlib.patches import FancyBboxPatch, Rectangle
+from matplotlib.patches import FancyBboxPatch, Rectangle, Circle, Arc
 from matplotlib.lines import Line2D
 
 from report_config import (BG, PANEL, INK, MUTED, GRID, TEAM_C, OPP_C, GOOD, BAD,
                            BARC, PAGE_W, PAGE_H, FONT, draw_pitch, style_bar_axis,
-                           surname, contrast_ink)
+                           surname, contrast_ink, PITCH_X, PITCH_Y,
+                           player_table, stat_table)
 import report_metrics as M
+
+
+def _draw_pitch_portrait(ax, lw=1.0):
+    """Pitch drawn tall (width along the page's horizontal axis, length
+    running vertically) - a same-shape copy of build_prematch.py's
+    draw_pitch_portrait(), kept local rather than imported (see this
+    module's import comment on why). Used for the lane/channel diagram
+    below: a lane is a strip of pitch width, and "left wing reads as the
+    left column" only holds if the pitch itself is portrait."""
+    ax.set_facecolor(BG)
+    X, Y = PITCH_X, PITCH_Y
+    r = dict(fill=False, color=INK, lw=lw, zorder=1)
+    ax.add_patch(Rectangle((-Y, -X), 2 * Y, 2 * X, **r))
+    ax.plot([-Y, Y], [0, 0], color=INK, lw=lw, zorder=1)
+    ax.add_patch(Circle((0, 0), 9.15, **r))
+    ax.plot([0], [0], marker=".", ms=2, color=INK, zorder=1)
+    for s in (-1, 1):
+        ax.add_patch(Rectangle((-20.16, s * X - s * 16.5), 40.32, s * 16.5, **r))
+        ax.add_patch(Rectangle((-9.16, s * X - s * 5.5), 18.32, s * 5.5, **r))
+        ax.plot([0], [s * (X - 11)], marker=".", ms=2, color=INK, zorder=1)
+        ax.add_patch(Arc((0, s * (X - 11)), 18.3, 18.3, angle=0,
+                         theta1=218 if s > 0 else 38,
+                         theta2=322 if s > 0 else 142, **r))
+    ax.set_xlim(-Y - 1.5, Y + 1.5)
+    ax.set_ylim(-X - 1.5, X + 1.5)
+    ax.set_aspect("equal")
+    ax.axis("off")
+
+
+def _lane_pitch(ax, values, colour, lane_labels, fmt="{:.1f}", fontsize=10.5):
+    """Lane/channel share on a portrait pitch - same layout as
+    build_prematch.py's draw_lane_pitch(), with a larger default label size
+    (explicit request: keep the writing on these bigger and clearer than
+    the pre-match version)."""
+    _draw_pitch_portrait(ax, lw=1.0)
+    X, Y = PITCH_X, PITCH_Y
+    edges = np.linspace(-Y, Y, len(lane_labels) + 1)
+    mx = max(values) if max(values) > 0 else 1
+    for i, v in enumerate(values):
+        x0, x1 = edges[i], edges[i + 1]
+        alpha = 0.12 + 0.68 * (v / mx)
+        ax.add_patch(Rectangle((x0, -X), x1 - x0, 2 * X, fc=colour, ec="none",
+                               alpha=alpha, zorder=0.5))
+        ax.plot([x0, x0], [-X, X], color=GRID, lw=0.6, zorder=1)
+        ax.text((x0 + x1) / 2, 0, f"{lane_labels[i]}\n{fmt.format(v)}",
+                ha="center", va="center", fontsize=fontsize, weight="bold",
+                color=INK, zorder=5, linespacing=1.4,
+                bbox=dict(boxstyle="round,pad=0.35", fc=PANEL, ec=GRID, lw=0.8))
 
 
 def _fig():
@@ -58,39 +109,13 @@ def page_cover(fig, team, opp, comp, matchday, venue_date, score):
 
 # ============================================================== page 2
 def page_match_stats(fig, rows, team, opp):
+    """Team-vs-team comparison table - same stat_table() picture-style
+    layout the pre-match report uses, replacing the old two-colour bar per
+    row."""
     _title(fig, "MATCH STATS", y=0.955, size=32)
-    fig.text(0.085, 0.915, team, ha="left", va="center", color=TEAM_C,
-             fontsize=14, weight="bold")
-    fig.text(0.915, 0.915, opp, ha="right", va="center", color=OPP_C,
-             fontsize=14, weight="bold")
-
-    ax = fig.add_axes([0.07, 0.035, 0.86, 0.855]); ax.axis("off")
-    ax.set_xlim(0, 1); ax.set_ylim(0, 1)
-
-    n = len(rows)
-    slot = 1.0 / n
-    bar_h = slot * 0.34
-
-    for i, (label, lt, rt, lv, rv) in enumerate(rows):
-        top = 1 - i * slot
-        ax.text(.5, top - slot * 0.30, label, ha="center", va="center",
-                color=INK, fontsize=11.5, weight="bold")
-        y = top - slot * 0.74
-        total = (lv or 0) + (rv or 0)
-        frac = 0.5 if total == 0 else (lv or 0) / total
-        frac = min(max(frac, 0.035), 0.965)
-
-        ax.add_patch(FancyBboxPatch((0, y - bar_h / 2), frac, bar_h,
-                                    boxstyle="round,pad=0,rounding_size=0.012",
-                                    fc=TEAM_C, ec="none", mutation_aspect=0.05))
-        ax.add_patch(FancyBboxPatch((frac, y - bar_h / 2), 1 - frac, bar_h,
-                                    boxstyle="round,pad=0,rounding_size=0.012",
-                                    fc=OPP_C, ec="none", mutation_aspect=0.05))
-
-        ax.text(frac - 0.012, y, lt, ha="right", va="center",
-                color="#FFFFFF", fontsize=10.5, weight="bold")
-        ax.text(frac + 0.012, y, rt, ha="left", va="center",
-                color="#111111", fontsize=10.5, weight="bold")
+    table_rows = [(label, lt, rt) for label, lt, rt, lv, rv in rows]
+    stat_table(fig, [0.075, 0.045, 0.85, 0.865], table_rows, team, opp,
+              left_colour=TEAM_C, right_colour=OPP_C)
 
 
 # ============================================================== page 3
@@ -395,16 +420,6 @@ def _pitch_panel(fig, rect, title, df, note, arrows=True, touches=False,
                  color=MUTED, fontsize=6.6)
 
 
-BENCH_C = "#FFFFFF"
-
-# Bars are match totals, so a player who was not on for the whole game cannot be
-# compared like-for-like. Minutes are shown for anyone who did not play the full
-# match, and short appearances are drawn dimmed so the eye does not rank them
-# naively against 95-minute starters. Per-90 is deliberately NOT used: one match
-# extrapolated x8 turns an 11-minute cameo into a chart-topper.
-PART_MATCH_MINS = 60
-
-
 def _plabels(names, mins=None, full=None):
     """Surname, with minutes appended for anyone short of a full match."""
     out = []
@@ -416,80 +431,15 @@ def _plabels(names, mins=None, full=None):
     return out
 
 
-def _mute(colour, amount=0.58, toward="#5A6676"):
-    """Desaturate towards neutral slate.
-
-    Alpha was tried first and looked wrong: fading towards a dark navy ground
-    darkens and muddies a saturated colour, so the bar reads as a *different*
-    category rather than a quieter version of the same one. Blending towards
-    grey keeps the luminance and kills only the saturation.
-    """
-    from matplotlib.colors import to_rgb
-    c, t = np.array(to_rgb(colour)), np.array(to_rgb(toward))
-    return tuple(c * (1 - amount) + t * amount)
-
-
-def _dimmed(names, mins, base):
-    """Per-bar colours: full colour for full-match players, muted for cameos."""
-    if not mins:
-        return base
-    muted = _mute(base)
-    return [base if mins.get(n, 999) >= PART_MATCH_MINS else muted
-            for n in names]
-
-
-def _draw_bench(ax, values, width=0.72):
-    """Season-median tick behind each bar. NaN = not enough appearances."""
-    drawn = False
-    for i, v in enumerate(values):
-        if v is None or (isinstance(v, float) and np.isnan(v)):
-            continue
-        ax.plot([i - width / 2, i + width / 2], [v, v], color=BENCH_C, lw=1.3,
-                solid_capstyle="butt", zorder=6, alpha=.95)
-        drawn = True
-    return drawn
-
-
-def _stacked_bar(fig, rect, ylabel, labels, ok, bad, bench=None,
-                 names=None, mins=None):
-    ax = fig.add_axes(rect)
-    style_bar_axis(ax, ylabel=ylabel, label_size=8, tick_size=7)
-    x = np.arange(len(labels))
-    ax.bar(x, ok, color=_dimmed(names, mins, GOOD) if names else GOOD,
-           width=.72, zorder=3)
-    ax.bar(x, bad, bottom=ok, color=_dimmed(names, mins, BAD) if names else BAD,
-           width=.72, zorder=3)
-    tot = np.array(ok) + np.array(bad)
-    ceiling = max(tot) if len(tot) else 1
-    if bench is not None and len(bench) and not np.all(np.isnan(bench)):
-        ceiling = max(ceiling, np.nanmax(bench))
-    for i, (o, t) in enumerate(zip(ok, tot)):
-        if t > 0:
-            # clear the season tick as well as the bar, or they collide
-            base = t
-            if bench is not None and i < len(bench) and not (
-                    bench[i] is None or np.isnan(bench[i])):
-                base = max(base, bench[i])
-            # "3/4" not "75%": with 1-2 attempts a percentage is meaningless,
-            # and a 1-of-1 "100%" outranked a 3-of-4 by eye.
-            ax.text(i, base + ceiling * .04, f"{int(o)}/{int(t)}", ha="center",
-                    va="bottom", fontsize=6.4, color=INK, weight="bold")
-    if bench is not None:
-        _draw_bench(ax, bench)
-    ax.set_xticks(x)
-    ax.set_xticklabels(labels, rotation=45, ha="right", fontsize=6.6)
-    top = max(tot.max() if len(tot) else 1,
-              np.nanmax(bench) if bench is not None and len(bench) else 0)
-    ax.set_ylim(0, max(top * 1.24, 1))
-    ax.margins(x=0.02)
-
-
 def page_player_stats_a(fig, ev, team, mins=None, full=None, opp=None):
+    """Pitch maps stay - they show WHERE, which a table can't - but every
+    per-player breakdown next to them is now a player_table() instead of a
+    bar chart, matching the pre-match report's personnel page."""
     _title(fig, "PLAYER STATS")
     if mins:
         fig.text(0.5, 0.928,
-                 "bars are match totals · minutes shown for anyone short of a "
-                 "full match · faded bars played under 60 minutes",
+                 "pitch maps plot every recorded event this match · minutes "
+                 "shown in the table for anyone short of a full match",
                  ha="center", va="center", color=MUTED, fontsize=7.2)
     # `xmin` crops each pitch to the zone the metric lives in, as the template does
     panels = [
@@ -524,123 +474,132 @@ def page_player_stats_a(fig, ev, team, mins=None, full=None, opp=None):
 
         if is_touch:
             cnt = df.groupby("playerName").size().sort_values(ascending=False)
-            ax = fig.add_axes([0.345, y, 0.615, h])
-            style_bar_axis(ax, ylabel="Box Touches", label_size=8, tick_size=7)
-            xs = np.arange(len(cnt))
             names = list(cnt.index)
-            ax.bar(xs, cnt.values, color=_dimmed(names, mins, BARC), width=.72,
-                   hatch="///", edgecolor="#0E6BA8", zorder=3)
-            for i, v in enumerate(cnt.values):
-                ax.text(i, v + max(cnt.values) * .05, str(int(v)), ha="center",
-                        va="bottom", fontsize=6.8, color=INK, weight="bold")
-            ax.set_xticks(xs)
-            ax.set_xticklabels(_plabels(names, mins, full), rotation=45,
-                               ha="right", fontsize=6.4)
-            ax.set_ylim(0, max(cnt.values) * 1.28)
+            rows = list(zip(_plabels(names, mins, full), cnt.values.tolist()))
+            player_table(fig, [0.345, y, 0.615, h], rows,
+                        ["Player", "Box touches"])
+        elif title.startswith("Open-Play Crosses") and opp:
+            for x0, sq in ((0.435, team), (0.710, opp)):
+                d = M.crosses_and_cutbacks(ev, sq)
+                g = d.groupby("playerName").agg(
+                    ok=("result", lambda s: (s == "SUCCESS").sum()),
+                    tot=("result", "size")).sort_values("tot", ascending=False)
+                labels = _plabels(list(g.index), mins, full)
+                rows = [(lab, int(r.ok), int(r.tot - r.ok))
+                       for lab, (_, r) in zip(labels, g.iterrows())]
+                player_table(fig, [x0, y, 0.255, h], rows,
+                            ["Player", "OK", "Missed"])
         else:
             g = df.groupby("playerName").agg(
                 ok=("result", lambda s: (s == "SUCCESS").sum()),
                 tot=("result", "size")).sort_values("tot", ascending=False)
-            g["bad"] = g.tot - g.ok
-            bar_rect = ([0.435, y, 0.525, h]
-                        if title.startswith("Open-Play Crosses") and opp
-                        else [0.345, y, 0.615, h])
-            _stacked_bar(fig, bar_rect, title,
-                         _plabels(list(g.index), mins, full),
-                         g.ok.tolist(), g.bad.tolist(),
-                         names=list(g.index), mins=mins)
+            labels = _plabels(list(g.index), mins, full)
+            rows = [(lab, int(r.ok), int(r.tot - r.ok))
+                   for lab, (_, r) in zip(labels, g.iterrows())]
+            player_table(fig, [0.345, y, 0.615, h], rows,
+                        ["Player", "Successful", "Unsuccessful"])
 
 
 # ============================================================== page 6
 def page_player_stats_b(fig, tbl, bench=None, mins=None, full=None):
+    """Same ten per-player metrics as before, now as player_table()s
+    instead of bar charts, matching the pre-match report's personnel page.
+    The season-median benchmark (previously a white tick behind the bar)
+    becomes its own column instead."""
     _title(fig, "PLAYER STATS")
-    if bench is not None and len(bench):
+    has_bench = bench is not None and len(bench)
+    if has_bench:
         fig.text(0.5, 0.928,
-                 "— white tick = player's season median in matches he played 60+ minutes",
+                 "\"Season median\" = the player's own median in matches he "
+                 "played 60+ minutes this season",
                  ha="center", va="center", color=MUTED, fontsize=7.5)
     else:
         # Silence would read as "no benchmark exists"; say why it is absent.
         fig.text(0.5, 0.928,
-                 "bars are match totals · minutes shown for anyone short of a full "
-                 "match · faded bars played under 60 minutes\n"
-                 "season benchmarks omitted — fewer than 5 matches of this "
-                 "season's data, and last season's squad is not a fair comparison",
+                 "minutes shown for anyone short of a full match — season "
+                 "benchmarks omitted: fewer than 5 matches of this season's "
+                 "data, and last season's squad is not a fair comparison",
                  ha="center", va="center", color=MUTED, fontsize=7.0,
                  linespacing=1.6)
 
-    def bvals(names, key):
-        if bench is None or len(bench) == 0 or key not in bench.columns:
+    def bval(name, key):
+        if not has_bench or key not in bench.columns or name not in bench.index:
             return None
-        return [bench[key].get(n, np.nan) for n in names]
+        v = bench.loc[name, key]
+        return None if pd.isna(v) else v
 
-    def plain(ax_rect, col, label, fmt="{:.1f}", ascending=False, bkey=None):
+    def label_above(rect, text):
+        fig.text(rect[0], rect[1] + rect[3] + 0.014, text, ha="left",
+                 va="center", color=INK, fontsize=10, weight="bold")
+
+    def plain_table(rect, col, label, fmt="{:.1f}", ascending=False, bkey=None):
+        label_above(rect, label)
         d = tbl[["playerName", col]].copy()
         d = d[d[col].notna()]
         d = d[d[col] != 0] if col in ("BPDR", "xG") else d
         d = d.sort_values(col, ascending=ascending)
-        ax = fig.add_axes(ax_rect)
-        style_bar_axis(ax, ylabel=label, label_size=8, tick_size=7)
-        xs = np.arange(len(d))
-        names = list(d.playerName)
-        ax.bar(xs, d[col].values, color=_dimmed(names, mins, BARC), width=.72,
-               hatch="///", edgecolor="#0E6BA8", zorder=3)
-        bv = bvals(d.playerName.tolist(), bkey or col)
-        span = max(abs(d[col].max()), abs(d[col].min()), 1e-9)
-        if bv is not None and len(bv) and not np.all(np.isnan(bv)):
-            span = max(span, abs(np.nanmax(bv)))
-        for i, v in enumerate(d[col].values):
-            base = v
-            if bv is not None and i < len(bv) and not (
-                    bv[i] is None or np.isnan(bv[i])):
-                base = max(v, bv[i]) if v >= 0 else min(v, bv[i])
-            ax.text(i, base + (span * .05 if v >= 0 else -span * .05),
-                    fmt.format(v), ha="center",
-                    va="bottom" if v >= 0 else "top", fontsize=6.2,
-                    color=INK, weight="bold")
-        if bv is not None:
-            _draw_bench(ax, bv)
-        ax.set_xticks(xs)
-        ax.set_xticklabels(_plabels(names, mins, full), rotation=45,
-                           ha="right", fontsize=6.2)
-        hi = d[col].max()
-        if bv is not None and len(bv) and not np.all(np.isnan(bv)):
-            hi = max(hi, np.nanmax(bv))
-        lo = min(0, d[col].min() * 1.35)
-        ax.set_ylim(lo, max(hi * 1.3, 1e-9))
+        labels = _plabels(list(d.playerName), mins, full)
+        cols = ["Player", label]
+        rows = []
+        for lab, (_, r) in zip(labels, d.iterrows()):
+            row = [lab, fmt.format(r[col])]
+            if has_bench:
+                bv = bval(r.playerName, bkey or col)
+                row.append(fmt.format(bv) if bv is not None else "-")
+            rows.append(tuple(row))
+        if has_bench:
+            cols = cols + ["Season median"]
+        player_table(fig, rect, rows, cols)
 
-    def duel(ax_rect, won, lost, label, bkey):
+    def duel_table(rect, won, lost, label, bkey):
+        label_above(rect, label)
         d = tbl[["playerName", won, lost]].copy()
         d["tot"] = d[won] + d[lost]
         d = d[d.tot > 0].sort_values("tot", ascending=False)
-        _stacked_bar(fig, ax_rect, label,
-                     _plabels(list(d.playerName), mins, full),
-                     d[won].tolist(), d[lost].tolist(),
-                     bench=bvals(d.playerName.tolist(), bkey),
-                     names=list(d.playerName), mins=mins)
+        labels = _plabels(list(d.playerName), mins, full)
+        cols = ["Player", "Won", "Lost"]
+        rows = []
+        for lab, (_, r) in zip(labels, d.iterrows()):
+            row = [lab, int(r[won]), int(r[lost])]
+            if has_bench:
+                bv = bval(r.playerName, bkey)
+                row.append(f"{bv:.1f}" if bv is not None else "-")
+            rows.append(tuple(row))
+        if has_bench:
+            cols = cols + ["Median"]
+        player_table(fig, rect, rows, cols)
 
-    def passes(ax_rect):
+    def passes_table(rect):
+        label_above(rect, "Passes")
         d = tbl[["playerName", "succ", "unsucc"]].copy()
         d["tot"] = d.succ + d.unsucc
         d = d[d.tot > 0].sort_values("tot", ascending=False)
-        _stacked_bar(fig, ax_rect, "Passes",
-                     _plabels(list(d.playerName), mins, full),
-                     d.succ.tolist(), d.unsucc.tolist(),
-                     bench=bvals(d.playerName.tolist(), "passes"),
-                     names=list(d.playerName), mins=mins)
+        labels = _plabels(list(d.playerName), mins, full)
+        cols = ["Player", "Successful", "Unsuccessful"]
+        rows = []
+        for lab, (_, r) in zip(labels, d.iterrows()):
+            row = [lab, int(r.succ), int(r.unsucc)]
+            if has_bench:
+                bv = bval(r.playerName, "passes")
+                row.append(f"{bv:.0f}" if bv is not None else "-")
+            rows.append(tuple(row))
+        if has_bench:
+            cols = cols + ["Median"]
+        player_table(fig, rect, rows, cols)
 
-    L, R, W, H = 0.075, 0.560, 0.385, 0.132
-    ys = [0.790, 0.612, 0.434, 0.256, 0.078]
+    L, R, W, H = 0.075, 0.560, 0.385, 0.122
+    ys = [0.780, 0.598, 0.416, 0.234, 0.052]
 
-    plain([L, ys[0], W, H], "BPD", "BPD")
-    plain([R, ys[0], W, H], "BPDR", "BPDR")
-    plain([L, ys[1], W, H], "xT", "xT", fmt="{:.2f}")
-    plain([R, ys[1], W, H], "xG", "xG", fmt="{:.2f}")
-    passes([L, ys[2], W, H])
-    duel([R, ys[2], W, H], "aw", "al", "Aerial Duels", "aerials")
-    duel([L, ys[3], W, H], "gw", "gl", "Ground Duels", "grounds")
-    plain([R, ys[3], W, H], "BLRT", "BLRT", fmt="{:.1f}", ascending=True)
-    plain([L, ys[4], W, H], "pressures", "Pressures", fmt="{:.0f}")
-    plain([R, ys[4], W, H], "recoveries", "Ball Recoveries", fmt="{:.0f}")
+    plain_table([L, ys[0], W, H], "BPD", "BPD")
+    plain_table([R, ys[0], W, H], "BPDR", "BPDR")
+    plain_table([L, ys[1], W, H], "xT", "xT", fmt="{:.2f}")
+    plain_table([R, ys[1], W, H], "xG", "xG", fmt="{:.2f}")
+    passes_table([L, ys[2], W, H])
+    duel_table([R, ys[2], W, H], "aw", "al", "Aerial Duels", "aerials")
+    duel_table([L, ys[3], W, H], "gw", "gl", "Ground Duels", "grounds")
+    plain_table([R, ys[3], W, H], "BLRT", "BLRT", fmt="{:.1f}", ascending=True)
+    plain_table([L, ys[4], W, H], "pressures", "Pressures", fmt="{:.0f}")
+    plain_table([R, ys[4], W, H], "recoveries", "Ball Recoveries", fmt="{:.0f}")
 
 
 # ========================================================== set-piece page
@@ -841,26 +800,24 @@ def page_out_of_possession(fig, ev, psum, squad_sums, dtbl, team, opp,
                  color=MUTED, fontsize=7)
         _stat_tiles(fig, [0.075, 0.520, 0.85, 0.072], tiles, team, opp)
 
-    # ---- where the opposition progressed
+    # ---- where the opposition progressed - a portrait pitch, not a bar
+    # chart (explicit request, matching the pre-match report's channel
+    # diagrams). Sized larger than the first pass at this (still bigger/
+    # clearer than the pre-match version's own labels) after direct
+    # feedback that it was too small to read comfortably - the rest of
+    # this page's lower section is compressed further to make room.
     lane = M.opponent_progression(ev, opp)
-    fig.text(0.075, 0.492, f"Where {opp} Bypassed Defenders", ha="left",
+    lane_labels = ["L\nWing", "L\nHS", "Centre", "R\nHS", "R\nWing"]
+    fig.text(0.075, 0.503, "Bypassed Defenders by Channel", ha="left",
              va="center", color=INK, fontsize=10.5, weight="bold")
-    ax = fig.add_axes([0.075, 0.355, 0.38, 0.120])
-    style_bar_axis(ax, ylabel="Opponent BPD", label_size=8, tick_size=7)
-    xs = np.arange(len(lane))
-    ax.bar(xs, lane.values, color=OPP_C, width=.68, zorder=3)
-    for i, v in enumerate(lane.values):
-        ax.text(i, v + lane.values.max() * .05, f"{v:.1f}", ha="center",
-                va="bottom", fontsize=6.6, color=INK, weight="bold")
-    ax.set_xticks(xs)
-    ax.set_xticklabels([l.replace("_", " ").title() for l in lane.index],
-                       rotation=35, ha="right", fontsize=6.5)
-    ax.set_ylim(0, lane.values.max() * 1.3)
+    lax = fig.add_axes([0.075, 0.208, 0.238, 0.275])
+    _lane_pitch(lax, lane.values, OPP_C, lane_labels, fmt="{:.1f}", fontsize=10.8)
 
-    # ---- conceded shot map
-    fig.text(0.545, 0.492, f"Shots Conceded to {opp}", ha="left", va="center",
+    # ---- conceded shot map (shares the row with the lane pitch, centred
+    # on it vertically since it needs less height)
+    fig.text(0.360, 0.503, f"Shots Conceded to {opp}", ha="left", va="center",
              color=INK, fontsize=10.5, weight="bold")
-    sax = fig.add_axes([0.545, 0.350, 0.40, 0.130])
+    sax = fig.add_axes([0.360, 0.286, 0.590, 0.120])
     draw_pitch(sax, lw=0.7)
     sax.set_xlim(-6, 54)
     s = ev[(ev.actionType == "SHOT") & (ev.squadName == opp)]
@@ -872,7 +829,7 @@ def page_out_of_possession(fig, ev, psum, squad_sums, dtbl, team, opp,
                     edgecolors="white" if goal else "none", linewidths=0.5,
                     alpha=.9, zorder=5)
     tot = ev[ev.squadName == opp][["SHOT_XG", "POSTSHOT_XG"]].sum()
-    fig.text(0.745, 0.338,
+    fig.text(0.655, 0.274,
              f"Conceded xG {tot.SHOT_XG:.2f} | PSxG {tot.POSTSHOT_XG:.2f} "
              f"| stars = goals",
              ha="center", va="center", color=MUTED, fontsize=6.8)
@@ -880,9 +837,9 @@ def page_out_of_possession(fig, ev, psum, squad_sums, dtbl, team, opp,
     # ---- player defensive actions
     d = dtbl.sort_values("def_actions", ascending=False)
     d = d[d.def_actions > 0]
-    fig.text(0.075, 0.305, f"{team} — Defensive Actions", ha="left",
+    fig.text(0.075, 0.190, f"{team} — Defensive Actions", ha="left",
              va="center", color=INK, fontsize=10.5, weight="bold")
-    ax2 = fig.add_axes([0.075, 0.175, 0.38, 0.115])
+    ax2 = fig.add_axes([0.075, 0.118, 0.38, 0.052])
     style_bar_axis(ax2, ylabel="Actions", label_size=8, tick_size=7)
     xs = np.arange(len(d))
     b = np.zeros(len(d))
@@ -902,9 +859,9 @@ def page_out_of_possession(fig, ev, psum, squad_sums, dtbl, team, opp,
     # ---- pressures by type
     p = dtbl.sort_values("NUMBER_OF_PRESSES", ascending=False)
     p = p[p.NUMBER_OF_PRESSES > 0]
-    fig.text(0.545, 0.305, f"{team} — Pressures by Type", ha="left",
+    fig.text(0.545, 0.190, f"{team} — Pressures by Type", ha="left",
              va="center", color=INK, fontsize=10.5, weight="bold")
-    ax3 = fig.add_axes([0.545, 0.175, 0.40, 0.115])
+    ax3 = fig.add_axes([0.545, 0.118, 0.40, 0.052])
     style_bar_axis(ax3, ylabel="Pressures", label_size=8, tick_size=7)
     xs = np.arange(len(p))
     b = np.zeros(len(p))
@@ -925,26 +882,21 @@ def page_out_of_possession(fig, ev, psum, squad_sums, dtbl, team, opp,
 
     # ---- turnover quality
     q = dtbl[dtbl.bwrd > 0].sort_values("bwrd", ascending=False).head(12)
-    fig.text(0.075, 0.130, f"{team} — Ball Win Removed Defenders "
+    fig.text(0.075, 0.080, f"{team} — Ball Win Removed Defenders "
                            f"(turnover quality)", ha="left", va="center",
-             color=INK, fontsize=10.5, weight="bold")
-    ax4 = fig.add_axes([0.075, 0.055, 0.85, 0.068])
-    style_bar_axis(ax4, ylabel="BWRD", label_size=8, tick_size=7)
+             color=INK, fontsize=9.0, weight="bold")
+    ax4 = fig.add_axes([0.075, 0.032, 0.85, 0.030])
+    style_bar_axis(ax4, ylabel="BWRD", label_size=7.0, tick_size=6.0)
     xs = np.arange(len(q))
     ax4.bar(xs, q.bwrd.values, color=BARC, width=.66, hatch="///",
             edgecolor="#0E6BA8", zorder=3)
     for i, v in enumerate(q.bwrd.values):
         ax4.text(i, v + max(q.bwrd.max(), .01) * .06, f"{v:.1f}", ha="center",
-                 va="bottom", fontsize=6.4, color=INK, weight="bold")
+                 va="bottom", fontsize=6.0, color=INK, weight="bold")
     ax4.set_xticks(xs)
     ax4.set_xticklabels([surname(n) for n in q.playerName], rotation=30,
-                        ha="right", fontsize=6.5)
+                        ha="right", fontsize=6.0)
     ax4.set_ylim(0, max(q.bwrd.max() * 1.35, 1))
-    fig.text(0.5, 0.022,
-             "How many opponent defenders were taken out of the game by each "
-             "player's ball wins — where a turnover happens matters more than "
-             "how many you make. Players with none are omitted.",
-             ha="center", va="center", color=MUTED, fontsize=6.8)
 
 
 # ========================================================== coach's brief
@@ -1033,46 +985,50 @@ def page_coach_brief(fig, rows, team, opp, score_line, provisional=True):
 
 
 # ======================================================= performance review
-def page_performance_review(fig, pros, cons, team, opp, score_line):
-    """Two-column verdict. Deliberately words, not figures - the eight pages
-    before this carry the numbers."""
-    import textwrap
+def page_performance_review(fig, pros, cons, how_it_went, team, opp, score_line):
+    """One flowing narrative instead of a two-column card grid - explicit
+    request: prose, not figures, describing how the game went, then what
+    was achieved, then what could improve. pros/cons and how_it_went all
+    still come from report_metrics.performance_review()'s own gated
+    conditions (the verdict still changes with the data, nothing here is
+    written in advance) - this only changes how they're assembled into
+    sentences."""
     _title(fig, "PERFORMANCE REVIEW", y=0.955, size=30)
     fig.text(0.5, 0.917, score_line, ha="center", va="center", color=MUTED,
              fontsize=11)
 
-    cols = [(0.055, "WHAT WORKED", GOOD, pros),
-            (0.515, "WHAT NEEDS WORK", BAD, cons)]
-    CW = 0.430
+    opening = how_it_went
 
-    for x0, title, accent, items in cols:
-        # column header
-        ax = fig.add_axes([x0, 0.855, CW, 0.038]); ax.axis("off")
+    achieved = (" ".join(d for _, d in pros) if pros else
+               "Nothing in this match stood out clearly enough to call a "
+               "genuine strength - a quiet performance rather than a bad one.")
+    improve = (" ".join(d for _, d in cons) if cons else
+              "No clear weakness stood out either - there wasn't an obvious "
+              "problem for the next session to fix.")
+
+    sections = [
+        ("HOW IT WENT", BARC, opening),
+        ("WHAT WE ACHIEVED", GOOD, achieved),
+        ("WHERE WE CAN IMPROVE", BAD, improve),
+    ]
+    # matplotlib's text line height is fontsize * linespacing, in points -
+    # converting that to a figure-fraction-per-line step (rather than a
+    # guessed constant) keeps the gap between sections consistent
+    # regardless of how many lines a paragraph actually wraps to.
+    FONTSIZE, LINESPACING = 11, 1.75
+    per_line = FONTSIZE * LINESPACING / 72 / PAGE_H
+    y = 0.865
+    for head, accent, para in sections:
+        ax = fig.add_axes([0.075, y - 0.006, 0.02, 0.022]); ax.axis("off")
         ax.set_xlim(0, 1); ax.set_ylim(0, 1)
-        ax.add_patch(FancyBboxPatch((0, 0.05), 1, 0.9,
-                                    boxstyle="round,pad=0,rounding_size=0.03",
-                                    fc=accent, ec="none", mutation_aspect=0.12))
-        ax.text(0.5, 0.5, title, ha="center", va="center", color="#10161F",
-                fontsize=12.5, weight="bold")
-
-        n = max(len(items), 1)
-        top, gap = 0.836, 0.010
-        h = min(0.118, (top - 0.055 - gap * (n - 1)) / n)
-        for i, (headline, detail) in enumerate(items):
-            y = top - (i + 1) * h - i * gap
-            cax = fig.add_axes([x0, y, CW, h]); cax.axis("off")
-            cax.set_xlim(0, 1); cax.set_ylim(0, 1)
-            cax.add_patch(FancyBboxPatch((0, 0), 1, 1,
-                                         boxstyle="round,pad=0,rounding_size=0.02",
-                                         fc=PANEL, ec=GRID, lw=0.8,
-                                         mutation_aspect=0.30))
-            # accent spine so the two columns read apart at a glance
-            cax.add_patch(Rectangle((0, 0.06), 0.012, 0.88, fc=accent, ec="none"))
-            cax.text(0.045, 0.87, headline, ha="left", va="top", color=INK,
-                     fontsize=9.4, weight="bold")
-            body = "\n".join(textwrap.wrap(detail, width=50))
-            cax.text(0.045, 0.63, body, ha="left", va="top", color="#B9C4D2",
-                     fontsize=8.0, linespacing=1.45)
+        ax.add_patch(Rectangle((0, 0), 1, 1, fc=accent, ec="none"))
+        fig.text(0.108, y, head, ha="left", va="center", color=INK,
+                 fontsize=14, weight="bold")
+        y -= 0.045
+        lines = textwrap.wrap(para, 95)
+        fig.text(0.075, y, "\n".join(lines), ha="left", va="top",
+                 color="#B9C4D2", fontsize=FONTSIZE, linespacing=LINESPACING)
+        y -= len(lines) * per_line + 0.055
 
     fig.text(0.5, 0.032,
              "Interpretation of the preceding pages. Each point is triggered by "

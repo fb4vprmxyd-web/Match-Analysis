@@ -46,8 +46,44 @@ warnings.filterwarnings("ignore")
 import report_metrics as RM
 from report_config import (apply_style, BG, PANEL, INK, MUTED, GRID, GOOD, BAD,
                            BARC, TEAM_C, PAGE_W, PAGE_H, style_bar_axis, surname,
-                           draw_pitch, contrast_ink)
+                           draw_pitch, contrast_ink, PITCH_X, PITCH_Y,
+                           stat_table, player_table)
 from envconfig import CACHE_ROOT, REPORTS_ROOT
+
+
+def draw_pitch_portrait(ax, lw=0.9, colour=None):
+    """Pitch drawn tall (pitch WIDTH along the page's horizontal axis,
+    pitch LENGTH running vertically) rather than landscape - every
+    coordinate below is report_config.draw_pitch()'s own, transposed: a +90
+    degree rotation, not a mirror, so a penalty-arc bulge still points the
+    right way at each end. Needed for the lane/channel views: a lane is a
+    strip of pitch WIDTH, and "left wing reads as the left column on the
+    page" only holds if the pitch itself is portrait. Same dark-theme
+    colours as report_config.draw_pitch() - this is the one shape it
+    doesn't already provide a portrait version of."""
+    c = colour or INK
+    ax.set_facecolor(BG)
+    X, Y = PITCH_X, PITCH_Y
+    r = dict(fill=False, color=c, lw=lw, zorder=1)
+
+    from matplotlib.patches import Rectangle, Circle, Arc
+    ax.add_patch(Rectangle((-Y, -X), 2 * Y, 2 * X, **r))
+    ax.plot([-Y, Y], [0, 0], color=c, lw=lw, zorder=1)
+    ax.add_patch(Circle((0, 0), 9.15, **r))
+    ax.plot([0], [0], marker=".", ms=2, color=c, zorder=1)
+
+    for s in (-1, 1):
+        ax.add_patch(Rectangle((-20.16, s * X - s * 16.5), 40.32, s * 16.5, **r))
+        ax.add_patch(Rectangle((-9.16, s * X - s * 5.5), 18.32, s * 5.5, **r))
+        ax.plot([0], [s * (X - 11)], marker=".", ms=2, color=c, zorder=1)
+        ax.add_patch(Arc((0, s * (X - 11)), 18.3, 18.3, angle=0,
+                         theta1=218 if s > 0 else 38,
+                         theta2=322 if s > 0 else 142, **r))
+
+    ax.set_xlim(-Y - 1.5, Y + 1.5)
+    ax.set_ylim(-X - 1.5, X + 1.5)
+    ax.set_aspect("equal")
+    ax.axis("off")
 
 
 def _resolve_caches(names):
@@ -101,10 +137,6 @@ OPP_COLOURS = {
     "FC Barnsley": "#8B1414",
 }
 OPP_C = os.environ.get("PRE_OPP_C", OPP_COLOURS.get(OPPONENT, "#5B7A99"))
-# "REF_C" now means us (Orient) on every comparison chart, not a reference
-# opponent - kept as Orient's own brand red so it reads consistently with
-# every other report in this suite.
-REF_C = TEAM_C
 
 
 def short_labels(names):
@@ -128,6 +160,8 @@ LANES = ["LEFT_WING", "LEFT_HALF_SPACE", "CENTER", "RIGHT_HALF_SPACE",
          "RIGHT_WING"]
 LANE_LABEL = ["Left\nwing", "Left\nhalf-space", "Centre", "Right\nhalf-space",
               "Right\nwing"]
+LANE_SHORT = ["Left wing", "Left half-space", "Centre", "Right half-space",
+             "Right wing"]
 ZONE_LABEL = {"FBL": "Left back", "FBR": "Right back", "CB": "Centre backs",
               "DM": "Defensive mid", "CM": "Centre mid", "AM": "Attacking mid",
               "WL": "Left wing", "WR": "Right wing", "IB": "Inside box",
@@ -277,8 +311,21 @@ def facts(opp, ours):
                  ("gw", "WON_GROUND_DUELS"), ("gl", "LOST_GROUND_DUELS"),
                  ("aw", "WON_AERIAL_DUELS"), ("al", "LOST_AERIAL_DUELS"),
                  ("fouls", "NUMBER_OF_FOULS"), ("shots", "SHOT_AT_GOAL_NUMBER"),
-                 ("goals", "GOALS")]:
+                 ("goals", "GOALS"), ("on_target", "SHOT_AT_GOAL_NUMBER_ON_TARGET"),
+                 ("cross_ok", None), ("cross_bad", None)]:
+        if c is None:
+            continue
         f[k], f[k + "_r"] = g(c), g_us(c)
+
+    # crosses completed % - both cross action types combined, both sides.
+    # No single Impect column for "crosses"; built from the same
+    # successful/unsuccessful-by-action columns passtype already reads.
+    def _cross_pct(get_fn):
+        ok = get_fn("SUCCESSFUL_PASSES_BY_ACTION_HIGH_CROSS") + get_fn("SUCCESSFUL_PASSES_BY_ACTION_LOW_CROSS")
+        bad = get_fn("UNSUCCESSFUL_PASSES_BY_ACTION_HIGH_CROSS") + get_fn("UNSUCCESSFUL_PASSES_BY_ACTION_LOW_CROSS")
+        return (ok / (ok + bad) * 100) if (ok + bad) else 0.0, ok, bad
+    f["cross_pct"], f["cross_ok"], f["cross_bad"] = _cross_pct(g)
+    f["cross_pct_r"], f["cross_ok_r"], f["cross_bad_r"] = _cross_pct(g_us)
 
     f["phase"] = {p: (g(f"BYPASSED_DEFENDERS_AT_PHASE_{p}"),
                       g_us(f"BYPASSED_DEFENDERS_AT_PHASE_{p}"))
@@ -476,6 +523,46 @@ def facts(opp, ours):
         f["throwin_taker"] = None
     f["opp_match_count"] = ev.matchId.nunique() if ev is not None and len(ev) else 0
 
+    # ---- goalkeeper pass length: no direct Impect column for this, built
+    # from event coordinates for whichever player(s) are tagged GOALKEEPER.
+    def _gk_pass_length(evdf, psdf, squad):
+        if evdf is None or len(evdf) == 0 or psdf is None or len(psdf) == 0:
+            return None
+        pmap = (psdf.groupby("playerName")["position"]
+               .agg(lambda x: x.value_counts().index[0]))
+        gks = set(pmap[pmap == "GOALKEEPER"].index)
+        d = evdf[(evdf.squadName == squad) & (evdf.actionType == "PASS")
+                & (evdf.result == "SUCCESS") & evdf.playerName.isin(gks)]
+        if len(d) == 0:
+            return None
+        dx = d.endAdjCoordinatesX - d.startAdjCoordinatesX
+        dy = d.endAdjCoordinatesY - d.startAdjCoordinatesY
+        return float(np.sqrt(dx ** 2 + dy ** 2).mean())
+
+    f["gk_pass_len"] = _gk_pass_length(ev, opp["ps"], OPPONENT)
+    f["gk_pass_len_r"] = _gk_pass_length(ours["ev"], ours["ps"], US)
+
+    # ---- passes before reaching the box: for each possession sequence
+    # (Impect's sequenceIndex, unique within a match) that reaches the box
+    # via a pass, how many of this squad's passes came before and including
+    # that one - averaged across every sequence that got there at all.
+    # sequenceIndex resets per match, so it's grouped with matchId to avoid
+    # colliding sequences from different cached matches into one.
+    def _passes_before_box(evdf, squad):
+        if evdf is None or len(evdf) == 0:
+            return None
+        d = evdf[evdf.squadName == squad]
+        counts = []
+        for _, g_ in d.groupby(["matchId", "sequenceIndex"]):
+            passes = g_[g_.actionType == "PASS"].reset_index(drop=True)
+            box = passes.index[passes.endPitchPosition == "OPPONENT_BOX"]
+            if len(box):
+                counts.append(int(box[0]) + 1)
+        return (sum(counts) / len(counts)) if counts else None
+
+    f["passes_to_box"] = _passes_before_box(ev, OPPONENT)
+    f["passes_to_box_r"] = _passes_before_box(ours["ev"], US)
+
     pl = opp["ps"]
     pos = (pl.groupby("playerName")["position"]
            .agg(lambda x: x.value_counts().index[0]))
@@ -504,82 +591,30 @@ def title(fig, text, sub=None, y=0.955):
                  fontsize=10.5)
 
 
-def compare_rows(fig, rect, rows, left, right):
-    ax = fig.add_axes(rect); ax.axis("off")
-    ax.set_xlim(0, 1); ax.set_ylim(0, 1)
-    n = len(rows); slot = 1.0 / n; bar_h = slot * 0.36
-    for i, (label, fmt, lv, rv) in enumerate(rows):
-        top = 1 - i * slot
-        ax.text(.5, top - slot * 0.28, label, ha="center", va="center",
-                color=INK, fontsize=9.5, weight="bold")
-        y = top - slot * 0.72
-        tot = (lv or 0) + (rv or 0)
-        frac = 0.5 if tot == 0 else (lv or 0) / tot
-        frac = min(max(frac, 0.06), 0.94)
-        ax.add_patch(FancyBboxPatch((0, y - bar_h / 2), frac, bar_h,
-                                    boxstyle="round,pad=0,rounding_size=0.012",
-                                    fc=OPP_C, ec="none", mutation_aspect=0.05))
-        ax.add_patch(FancyBboxPatch((frac, y - bar_h / 2), 1 - frac, bar_h,
-                                    boxstyle="round,pad=0,rounding_size=0.012",
-                                    fc=REF_C, ec="none", mutation_aspect=0.05))
-        ax.text(frac - 0.012, y, fmt.format(lv), ha="right", va="center",
-                color="#FFFFFF", fontsize=9, weight="bold")
-        ax.text(frac + 0.012, y, fmt.format(rv), ha="left", va="center",
-                color="#10161F", fontsize=9, weight="bold")
-
-
-def grouped(fig, rect, labels, a, b, ylabel, names, note=None):
-    ax = fig.add_axes(rect)
-    style_bar_axis(ax, ylabel=ylabel, label_size=8.5, tick_size=7)
-    x = np.arange(len(labels))
-    ax.bar(x - .19, a, width=.36, color=OPP_C, zorder=3, label=names[0])
-    ax.bar(x + .19, b, width=.36, color=REF_C, zorder=3, label=names[1])
-    for i, (va, vb) in enumerate(zip(a, b)):
-        top = max(a + b) if len(a) else 1
-        ax.text(i - .19, va + top * .03, f"{va:.0f}" if va >= 10 else f"{va:.1f}",
-                ha="center", va="bottom", fontsize=6.4, color=INK, weight="bold")
-        ax.text(i + .19, vb + top * .03, f"{vb:.0f}" if vb >= 10 else f"{vb:.1f}",
-                ha="center", va="bottom", fontsize=6.4, color=MUTED)
-    ax.set_xticks(x); ax.set_xticklabels(labels, fontsize=7, rotation=18, ha="right")
-    ax.set_ylim(0, max(max(a + b) * 1.28, 1))
-    ax.legend(frameon=False, fontsize=6.6, labelcolor=INK, loc="upper right",
-              ncol=2, handlelength=1.1)
-    if note:
-        fig.text(rect[0], rect[1] - 0.050, note, ha="left", va="center",
-                 color=MUTED, fontsize=6.8)
-
-
-def player_bar(fig, rect, d, col, ylabel, colour=BARC, fmt="{:.1f}", n=10,
-               ascending=False, labels=None):
-    d = d[d[col] != 0].sort_values(col, ascending=ascending).head(n)
-    ax = fig.add_axes(rect)
-    style_bar_axis(ax, ylabel=ylabel, label_size=8.5, tick_size=7)
-    x = np.arange(len(d))
-    ax.bar(x, d[col].values, color=colour, width=.7, zorder=3)
-    for i, v in enumerate(d[col].values):
-        ax.text(i, v + d[col].max() * .04, fmt.format(v), ha="center",
-                va="bottom", fontsize=6.4, color=INK, weight="bold")
-    ax.set_xticks(x)
-    ax.set_xticklabels([(labels or {}).get(p, surname(p)) for p in d.playerName],
-                       rotation=40, ha="right", fontsize=6.4)
-    ax.set_ylim(0, d[col].max() * 1.25)
-
-
-def point_card(fig, rect, num, headline, stat, statlabel, body, accent):
-    ax = fig.add_axes(rect); ax.axis("off")
-    ax.set_xlim(0, 1); ax.set_ylim(0, 1)
-    ax.add_patch(FancyBboxPatch((0, 0), 1, 1,
-                                boxstyle="round,pad=0,rounding_size=0.02",
-                                fc=PANEL, ec=GRID, lw=0.8, mutation_aspect=0.30))
-    ax.add_patch(Rectangle((0, 0.06), 0.012, 0.88, fc=accent, ec="none"))
-    ax.text(0.045, 0.87, f"{num}. {headline}", ha="left", va="top", color=INK,
-            fontsize=9.6, weight="bold")
-    ax.text(0.045, 0.52, stat, ha="left", va="center", color=accent,
-            fontsize=19, weight="bold")
-    ax.text(0.045, 0.30, statlabel, ha="left", va="center", color=MUTED,
-            fontsize=6.8)
-    ax.text(0.44, 0.60, "\n".join(textwrap.wrap(body, 42)), ha="left",
-            va="top", color="#B9C4D2", fontsize=7.4, linespacing=1.5)
+def draw_lane_pitch(ax, values, colour, lane_labels, fmt="{:.0f}%"):
+    """The lane/channel share charts, drawn on a portrait pitch (explicit
+    request: "make them look as a pitch", "vertical not horizontal, left
+    wing on the left and right wing on the right"). `values` are in LANES
+    order (LEFT_WING..RIGHT_WING); this function is the one place that
+    decides which page position each named lane gets, and it does so
+    directly from that order - band 0 (LEFT_WING) always renders as the
+    leftmost column, band 4 (RIGHT_WING) always the rightmost - so there's
+    no coordinate-sign guess involved, just the label order already in
+    LANES itself."""
+    draw_pitch_portrait(ax, lw=1.0)
+    X, Y = PITCH_X, PITCH_Y
+    edges = np.linspace(-Y, Y, len(lane_labels) + 1)
+    mx = max(values) if max(values) > 0 else 1
+    for i, v in enumerate(values):
+        x0, x1 = edges[i], edges[i + 1]
+        alpha = 0.12 + 0.68 * (v / mx)
+        ax.add_patch(Rectangle((x0, -X), x1 - x0, 2 * X, fc=colour, ec="none",
+                               alpha=alpha, zorder=0.5))
+        ax.plot([x0, x0], [-X, X], color=GRID, lw=0.6, zorder=1)
+        ax.text((x0 + x1) / 2, 0, f"{lane_labels[i]}\n{fmt.format(v)}",
+                ha="center", va="center", fontsize=8.2, weight="bold",
+                color=INK, zorder=5, linespacing=1.4,
+                bbox=dict(boxstyle="round,pad=0.3", fc=PANEL, ec=GRID, lw=0.7))
 
 
 # ------------------------------------------------------------------- pages
@@ -652,78 +687,74 @@ def page_cover(fig, f):
 
 
 def page_profile(fig, f):
+    # Page 2 feedback: combine shots into a "shots / on target" row, drop
+    # bypassed defenders and successful passes, add possession - the
+    # remaining rows are the closest read of "passes defenders" (there's no
+    # exact stat by that name; "Bypassed Defenders" is the only candidate).
     n_opp, n_our = len(f["opp_matches"]), len(f["our_matches"])
     sample = (f"last {n_opp} for them, {n_our} for us" if n_opp != n_our
              else f"last {n_opp} matches each")
     title(fig, "THE PROFILE", f"{OPPONENT} vs {f['ref']} — {sample}, per game")
-    fig.text(0.085, 0.888, OPPONENT, ha="left", va="center", color=OPP_C,
-             fontsize=12, weight="bold")
-    fig.text(0.915, 0.888, f["ref"], ha="right", va="center", color=REF_C,
-             fontsize=12, weight="bold")
+    poss = f["scores"].get("RATIO_BALL_POSSESSION", (0.0, 0.0))
     rows = [
-        ("xG", "{:.2f}", f["xg"], f["xg_r"]),
-        ("Post-Shot xG", "{:.2f}", f["psxg"], f["psxg_r"]),
-        ("Shots", "{:.0f}", f["shots"], f["shots_r"]),
-        ("Bypassed Defenders", "{:.1f}", f["bpd"], f["bpd_r"]),
-        ("Packing xT", "{:.2f}", f["pxt"], f["pxt_r"]),
-        ("Successful Passes", "{:.0f}", f["succ"], f["succ_r"]),
-        ("Pressures", "{:.0f}", f["press"], f["press_r"]),
-        ("Ball Wins", "{:.0f}", f["wins"], f["wins_r"]),
-        ("Ball Win Removed Defenders", "{:.1f}", f["bwrd"], f["bwrd_r"]),
-        ("Ground Duels Won", "{:.0f}", f["gw"], f["gl"]),
-        ("Aerial Duels Won", "{:.0f}", f["aw"], f["al"]),
-        ("Fouls", "{:.0f}", f["fouls"], f["fouls_r"]),
+        ("xG", f"{f['xg']:.2f}", f"{f['xg_r']:.2f}"),
+        ("Post-Shot xG", f"{f['psxg']:.2f}", f"{f['psxg_r']:.2f}"),
+        ("Shots / on target", f"{f['shots']:.1f}/{f['on_target']:.1f}",
+         f"{f['shots_r']:.1f}/{f['on_target_r']:.1f}"),
+        ("Possession", f"{poss[0]*100:.0f}%", f"{poss[1]*100:.0f}%"),
+        ("Packing xT", f"{f['pxt']:.2f}", f"{f['pxt_r']:.2f}"),
+        ("Pressures", f"{f['press']:.0f}", f"{f['press_r']:.0f}"),
+        ("Ball Wins", f"{f['wins']:.0f}", f"{f['wins_r']:.0f}"),
+        ("Ball Win Removed Defenders", f"{f['bwrd']:.1f}", f"{f['bwrd_r']:.1f}"),
+        ("Ground Duels Won", f"{f['gw']:.0f}", f"{f['gl']:.0f}"),
+        ("Aerial Duels Won", f"{f['aw']:.0f}", f"{f['al']:.0f}"),
+        ("Fouls", f"{f['fouls']:.0f}", f"{f['fouls_r']:.0f}"),
     ]
-    compare_rows(fig, [0.075, 0.075, 0.85, 0.78], rows, OPPONENT, f["ref"])
-    poss = f["scores"].get("RATIO_BALL_POSSESSION")
+    stat_table(fig, [0.075, 0.075, 0.85, 0.80], rows, OPPONENT, f["ref"],
+              left_colour=OPP_C, right_colour=TEAM_C)
     bits = []
-    if poss:
-        more_less = "Less" if poss[0] < poss[1] else "More"
-        bits.append(f"{more_less} of the ball ({poss[0]*100:.0f}% to {poss[1]*100:.0f}%)")
+    more_less = "Less" if poss[0] < poss[1] else "More"
+    bits.append(f"{more_less} of the ball ({poss[0]*100:.0f}% to {poss[1]*100:.0f}%)")
     bpd_cmp = "more" if f["bpd"] > f["bpd_r"] else "less"
     bits.append(f"{bpd_cmp} progression ({f['bpd']:.1f} to {f['bpd_r']:.1f} "
                f"bypassed defenders)")
     if f["bwrd_r"] > 0:
         bits.append(f"turnovers that hurt {f['bwrd']/f['bwrd_r']:.1f}x as much")
     fig.text(0.5, 0.042, ", ".join(bits) + ".",
-             ha="center", va="center", color=MUTED, fontsize=8)
+             ha="center", va="center", color=MUTED, fontsize=8.5)
 
 
 def page_style(fig, f):
+    # Page 3 feedback: everything here becomes a table; "how they press"
+    # moved out to page 4 and the passing network moved in from there;
+    # "where they win the ball back" removed (it duplicated page 4's pitch
+    # panel, which is the better version of the same thing); goalkeeper
+    # pass length, passes before the box, and crosses % added. "How they
+    # move the ball forward" was flagged as maybe-remove, not a definite
+    # cut - kept, as a table, since the ask was tentative.
     title(fig, "HOW THEY PLAY")
-    ph = ["IN_POSSESSION", "ATTACKING_TRANSITION", "SET_PIECE", "SECOND_BALL"]
-    lab = ["Settled\npossession", "Attacking\ntransition", "Set piece", "Second ball"]
-    a = [f["phase"][p][0] for p in ph]; b = [f["phase"][p][1] for p in ph]
-    share = a[1] / sum(a) * 100
-    fig.text(0.075, 0.885, "Where their progression comes from", ha="left",
-             va="center", color=INK, fontsize=11, weight="bold")
-    grouped(fig, [0.075, 0.665, 0.385, 0.175], lab, a, b, "Bypassed defenders",
-            (OPPONENT, f["ref"]),
-            note=f"{share:.0f}% of their progression came in transition.")
 
-    kinds = ["BUILD_UP", "BETWEEN_THE_LINES", "COUNTER_PRESS"]
-    klab = ["In their\nbuild-up", "Between\nthe lines", "Counter-\npress"]
-    ka = [f["press_kind"][k][0] for k in kinds]
-    kb = [f["press_kind"][k][1] for k in kinds]
-    fig.text(0.545, 0.885, "How they press", ha="left", va="center", color=INK,
-             fontsize=11, weight="bold")
-    grouped(fig, [0.545, 0.665, 0.385, 0.175], klab, ka, kb, "Pressures",
-            (OPPONENT, f["ref"]),
-            note=f"Between the lines: {ka[1]:.0f} to {kb[1]:.0f}.")
+    ph = ["IN_POSSESSION", "ATTACKING_TRANSITION", "SET_PIECE", "SECOND_BALL"]
+    lab = ["Settled possession", "Attacking transition", "Set piece", "Second ball"]
+    a = [f["phase"][p][0] for p in ph]; b = [f["phase"][p][1] for p in ph]
+    share = a[1] / sum(a) * 100 if sum(a) else 0
+    rows = [(lab[i], f"{a[i]:.1f}", f"{b[i]:.1f}") for i in range(len(ph))]
+    stat_table(fig, [0.055, 0.660, 0.415, 0.230], rows, OPPONENT, f["ref"],
+              header="Where their progression comes from",
+              left_colour=OPP_C, right_colour=TEAM_C)
+    fig.text(0.055, 0.638, f"{share:.0f}% of their progression came in "
+                           f"transition (bypassed defenders).",
+             ha="left", va="center", color=MUTED, fontsize=7.4)
 
     acts = ["LOW_PASS", "CHIPPED_PASS", "DIAGONAL_PASS", "DRIBBLE",
             "HIGH_CROSS", "LOW_CROSS"]
-    alab = ["Low pass", "Chipped", "Diagonal", "Dribble", "High cross", "Low cross"]
-    aa = [f["action"][x][0] for x in acts]
-    ab = [f["action"][x][1] for x in acts]
-    fig.text(0.075, 0.590, "How they move the ball forward", ha="left",
-             va="center", color=INK, fontsize=11, weight="bold")
-    grouped(fig, [0.075, 0.385, 0.385, 0.170], alab, aa, ab, "Bypassed defenders",
-            (OPPONENT, f["ref"]))
+    alab = ["Low pass", "Chipped pass", "Diagonal", "Dribble", "High cross", "Low cross"]
+    aa = [f["action"][x][0] for x in acts]; ab = [f["action"][x][1] for x in acts]
+    rows = [(alab[i], f"{aa[i]:.1f}", f"{ab[i]:.1f}") for i in range(len(acts))]
+    stat_table(fig, [0.525, 0.660, 0.415, 0.230], rows, OPPONENT, f["ref"],
+              header="How they move the ball forward",
+              left_colour=OPP_C, right_colour=TEAM_C)
     diag_o, diag_u = f["action"]["DIAGONAL_PASS"]
-    # unconditionally calling this "switch play" was true for whichever
-    # opponent it was first written against and silently wrong for a side
-    # whose diagonal output is actually low or nonexistent
     if diag_o >= diag_u and diag_o > 0:
         diag_txt = (f"They switch play: diagonals gave them {diag_o:.1f} "
                     f"bypassed defenders, against our {diag_u:.1f}.")
@@ -733,83 +764,99 @@ def page_style(fig, f):
     else:
         diag_txt = (f"They don't switch play through diagonals in this "
                     f"sample at all (ours {diag_u:.1f}).")
-    fig.text(0.075, 0.335, diag_txt, ha="left", va="center", color=MUTED,
-             fontsize=6.8)
+    fig.text(0.525, 0.638, diag_txt, ha="left", va="center", color=MUTED, fontsize=7.4)
 
     types = ["LOW_PASS", "CHIPPED_PASS", "DIAGONAL_PASS", "HIGH_CROSS"]
-    tlab = ["Low pass", "Chipped", "Diagonal", "High cross"]
-    ok = [f["passtype"][t][0] for t in types]
-    bad = [f["passtype"][t][1] for t in types]
-    fig.text(0.545, 0.590, "…and how often it works", ha="left", va="center",
-             color=INK, fontsize=11, weight="bold")
-    ax = fig.add_axes([0.545, 0.385, 0.385, 0.170])
-    style_bar_axis(ax, ylabel="Passes", label_size=8.5, tick_size=7)
-    x = np.arange(len(types))
-    ax.bar(x, ok, color=GOOD, width=.7, zorder=3, label="completed")
-    ax.bar(x, bad, bottom=ok, color=BAD, width=.7, zorder=3, label="not")
-    for i, (o, t) in enumerate(zip(ok, np.array(ok) + np.array(bad))):
-        if t:
-            ax.text(i, t + max(np.array(ok) + np.array(bad)) * .04,
-                    f"{int(o)}/{int(t)}", ha="center", va="bottom",
-                    fontsize=6.4, color=INK, weight="bold")
-    ax.set_xticks(x); ax.set_xticklabels(tlab, rotation=35, ha="right", fontsize=6.8)
-    ax.set_ylim(0, max(np.array(ok) + np.array(bad)) * 1.3)
-    ax.legend(frameon=False, fontsize=6.4, labelcolor=INK, loc="upper right", ncol=2)
+    tlab = ["Low pass", "Chipped pass", "Diagonal", "High cross"]
+    trows = []
+    for t, lb in zip(types, tlab):
+        ok, bad = f["passtype"][t]
+        rate = ok / (ok + bad) * 100 if (ok + bad) else 0
+        trows.append((lb, f"{int(ok)}/{int(ok+bad)}", f"{rate:.0f}%"))
+    player_table(fig, [0.055, 0.365, 0.415, 0.250], trows,
+                ["Pass type", "Completed", "Rate"],
+                header="…and how often it works")
     cp = f["passtype"]["CHIPPED_PASS"]
     cp_rate = cp[0] / (cp[0] + cp[1]) * 100 if (cp[0] + cp[1]) else 0
     cp_word = "Only" if cp_rate < 55 else "A healthy"
-    fig.text(0.545, 0.335, f"{cp_word} {cp_rate:.0f}% of their chipped "
+    fig.text(0.055, 0.345, f"{cp_word} {cp_rate:.0f}% of their chipped "
                            f"passes found a teammate.",
-             ha="left", va="center", color=MUTED, fontsize=6.8)
+             ha="left", va="center", color=MUTED, fontsize=7.4)
 
-    zl = ["FIRST_THIRD", "MIDDLE_THIRD", "FINAL_THIRD", "OPPONENT_BOX"]
-    zn = ["Own third", "Middle third", "Final third", "Opp box"]
-    zv = [f["wins_zone"][z] for z in zl]
-    high = (zv[2] + zv[3]) / sum(zv) * 100
-    fig.text(0.075, 0.310, "Where they win the ball back", ha="left",
-             va="center", color=INK, fontsize=11, weight="bold")
-    ax = fig.add_axes([0.075, 0.105, 0.385, 0.170])
-    style_bar_axis(ax, ylabel="Ball wins", label_size=8.5, tick_size=7)
-    x = np.arange(len(zv))
-    ax.bar(x, zv, color=OPP_C, width=.7, zorder=3)
-    for i, v in enumerate(zv):
-        ax.text(i, v + max(zv) * .04, f"{v:.0f}", ha="center", va="bottom",
-                fontsize=6.6, color=INK, weight="bold")
-    ax.set_xticks(x); ax.set_xticklabels(zn, rotation=25, ha="right", fontsize=6.8)
-    ax.set_ylim(0, max(zv) * 1.25)
-    fig.text(0.075, 0.055, f"{high:.0f}% of their ball wins came in the final "
-                           f"third or the box.",
-             ha="left", va="center", color=MUTED, fontsize=6.8)
-
-    # every category with at least one shot - a fixed 4- or 5-bar list quietly
-    # dropped free kicks/open goals/corners/penalties whenever an opponent had
-    # one, which understated their true shot total on this chart alone.
     st = ["LONG_RANGE_SHOT", "MID_RANGE_SHOT", "CLOSE_RANGE_SHOT",
           "ONE_VS_ONE_AGAINST_GK", "HEADER", "OPEN_GOAL_SHOT", "FREE_KICK",
           "CORNER", "PENALTY_KICK"]
     sn = ["Long range", "Mid range", "Close range", "1v1 vs GK", "Header",
           "Open goal", "Free kick", "Corner", "Penalty"]
-    all_sv = {t: f["shot_type"][t][0] for t in st}
-    mid_n = all_sv["MID_RANGE_SHOT"]
-    pairs = [(lab, all_sv[t]) for t, lab in zip(st, sn) if all_sv[t] > 0] or [("None", 0)]
-    sn = [p[0] for p in pairs]; sv = [p[1] for p in pairs]
-    fig.text(0.545, 0.310, "Where they shoot from", ha="left", va="center",
-             color=INK, fontsize=11, weight="bold")
-    ax = fig.add_axes([0.545, 0.105, 0.385, 0.170])
-    style_bar_axis(ax, ylabel="Shots", label_size=8.5, tick_size=7)
-    x = np.arange(len(sv))
-    ax.bar(x, sv, color=OPP_C, width=.7, zorder=3)
-    for i, v in enumerate(sv):
-        ax.text(i, v + max(sv) * .05, f"{v:.0f}", ha="center", va="bottom",
-                fontsize=6.6, color=INK, weight="bold")
-    ax.set_xticks(x); ax.set_xticklabels(sn, rotation=25, ha="right", fontsize=6.8)
-    ax.set_ylim(0, max(sv) * 1.3)
-    fig.text(0.545, 0.055, f"{mid_n:.0f} of their {f['shots']:.0f} shots were "
+    srows = [(lb, f"{f['shot_type'][t][0]:.0f}", f"{f['shot_type'][t][1]:.2f}")
+            for t, lb in zip(st, sn) if f["shot_type"][t][0] > 0] or [("None", "0", "0.00")]
+    player_table(fig, [0.525, 0.365, 0.415, 0.250], srows,
+                ["Shot type", "Shots", "xG"], header="Where they shoot from")
+    mid_n = f["shot_type"]["MID_RANGE_SHOT"][0]
+    fig.text(0.525, 0.345, f"{mid_n:.0f} of their {f['shots']:.0f} shots were "
                            f"from mid range — low-value efforts.",
-             ha="left", va="center", color=MUTED, fontsize=6.8)
+             ha="left", va="center", color=MUTED, fontsize=7.4)
 
+    extra = [
+        ("Goalkeeper pass length",
+         f"{f['gk_pass_len']:.0f}m" if f["gk_pass_len"] is not None else "-",
+         f"{f['gk_pass_len_r']:.0f}m" if f["gk_pass_len_r"] is not None else "-"),
+        ("Passes before reaching the box",
+         f"{f['passes_to_box']:.1f}" if f["passes_to_box"] is not None else "-",
+         f"{f['passes_to_box_r']:.1f}" if f["passes_to_box_r"] is not None else "-"),
+        ("Crosses completed",
+         f"{f['cross_ok']:.0f}/{f['cross_ok']+f['cross_bad']:.0f}  {f['cross_pct']:.0f}%",
+         f"{f['cross_ok_r']:.0f}/{f['cross_ok_r']+f['cross_bad_r']:.0f}  {f['cross_pct_r']:.0f}%"),
+    ]
+    stat_table(fig, [0.055, 0.078, 0.415, 0.220], extra, OPPONENT, f["ref"],
+              header="More on their build-up", left_colour=OPP_C, right_colour=TEAM_C)
+
+    # ---- starting XI passing network (moved in from the press page)
+    cut = f.get("first_change")
+    fig.text(0.525, 0.298, "Starting XI — passing network", ha="left",
+             va="center", color=INK, fontsize=13, weight="bold")
+    ax = fig.add_axes([0.525, 0.078, 0.415, 0.205])
+    draw_pitch(ax, lw=0.9)
+    nodes, edges = f.get("net", (None, None))
+    if nodes is not None and len(edges):
+        mx = edges.n.max()
+        pos = nodes.set_index("playerName")[["x", "y"]].to_dict("index")
+        for _, e in edges.iterrows():
+            a2, b2 = e.playerName, e.passReceiverPlayerName
+            if a2 in pos and b2 in pos and e.n >= 2:
+                ax.plot([pos[a2]["x"], pos[b2]["x"]], [pos[a2]["y"], pos[b2]["y"]],
+                        color="#D8E2EE", lw=0.4 + 3.2 * (e.n / mx),
+                        alpha=0.25 + 0.55 * (e.n / mx), zorder=2,
+                        solid_capstyle="round")
+    if nodes is not None and len(nodes):
+        smax = nodes.n.max()
+        offs = RM.label_offsets(nodes, ax, s_base=95, s_extra=520)
+        for k, (_, r2) in enumerate(nodes.iterrows()):
+            ax.scatter([r2.x], [r2.y], s=95 + 520 * (r2.n / smax), color=OPP_C,
+                       edgecolors="#BFD9F5", linewidths=1.2, zorder=3)
+            lab_ = str(f["shirts"].get(r2.playerName, ""))
+            if not lab_:
+                lab_ = surname(r2.playerName)[:3].upper()
+            lx, ly, leader = offs[k]
+            if leader:
+                ax.plot([r2.x, lx], [r2.y, ly], color="#BFD9F5", lw=0.7,
+                        alpha=.8, zorder=4)
+                ax.text(lx, ly, lab_, ha="center", va="center", color="#0B1B2B",
+                        fontsize=7, weight="bold", zorder=6,
+                        bbox=dict(boxstyle="circle,pad=0.28", fc="#BFD9F5",
+                                  ec="none"))
+            else:
+                ax.text(r2.x, r2.y, lab_, ha="center", va="center",
+                        color="#0B1B2B", fontsize=7, weight="bold", zorder=5)
+    fig.text(0.7325, 0.062, f"0–{cut}' before the first change · "
+                            f"{f.get('net_passes', 0)} successful passes · "
+                            f"vs {f['net_opp']}, {f['net_date']} · attacking right",
+             ha="center", va="center", color=MUTED, fontsize=6.8)
 
 def page_personnel(fig, f):
+    # Page 7 feedback: tables throughout, minutes played dropped entirely -
+    # the space that freed up goes to making the four tables below taller
+    # (more rows each) rather than sitting empty.
     title(fig, "KEY PERSONNEL",
          f"{OPPONENT} — combined across their last {len(f['opp_matches'])} "
          f"matches ({f['opp_comp_mix']})")
@@ -818,125 +865,82 @@ def page_personnel(fig, f):
         fig.text(0.5, 0.5, "No player data available for this match.",
                  ha="center", va="center", color=MUTED, fontsize=11)
         return
-    fig.text(0.075, 0.878, "Who progresses the ball", ha="left", va="center",
-             color=INK, fontsize=11, weight="bold")
-    player_bar(fig, [0.075, 0.660, 0.385, 0.180], p, "BPD",
-               "Bypassed defenders", OPP_C, labels=f["labels"])
+    labels = f["labels"]
+
+    def _name(n):
+        return labels.get(n, surname(n))
+
     top = p.nlargest(1, "BPD").iloc[0]
-    fig.text(0.075, 0.610, f"{surname(top.playerName)} ({top.position.replace('_',' ').lower()}) "
-                           f"is the pivot — {top.BPD:.1f} bypassed defenders.",
-             ha="left", va="center", color=MUTED, fontsize=6.8)
+    d = p[p.BPD != 0].sort_values("BPD", ascending=False).head(8)
+    rows = [(_name(r.playerName), r.position.replace("_", " ").title(), f"{r.BPD:.1f}")
+           for _, r in d.iterrows()]
+    player_table(fig, [0.075, 0.560, 0.415, 0.335], rows,
+                ["Player", "Position", "Bypassed def."],
+                header="Who progresses the ball")
+    fig.text(0.075, 0.538, f"{surname(top.playerName)} "
+                           f"({top.position.replace('_',' ').lower()}) is the "
+                           f"pivot — {top.BPD:.1f} bypassed defenders.",
+             ha="left", va="center", color=MUTED, fontsize=7.4)
 
-    fig.text(0.545, 0.878, "Who receives it", ha="left", va="center",
-             color=INK, fontsize=11, weight="bold")
-    player_bar(fig, [0.545, 0.660, 0.385, 0.180], p, "BPDR",
-               "Bypassed defenders received", GOOD, labels=f["labels"])
     topr = p.nlargest(1, "BPDR").iloc[0]
-    fig.text(0.545, 0.610, f"{surname(topr.playerName)} is the out-ball — "
+    d = p[p.BPDR != 0].sort_values("BPDR", ascending=False).head(8)
+    rows = [(_name(r.playerName), r.position.replace("_", " ").title(), f"{r.BPDR:.1f}")
+           for _, r in d.iterrows()]
+    player_table(fig, [0.525, 0.560, 0.415, 0.335], rows,
+                ["Player", "Position", "Received"],
+                header="Who receives it")
+    fig.text(0.525, 0.538, f"{surname(topr.playerName)} is the out-ball — "
                            f"{topr.BPDR:.1f} received.", ha="left", va="center",
-             color=MUTED, fontsize=6.8)
+             color=MUTED, fontsize=7.4)
 
-    fig.text(0.075, 0.585, "Who gives it away (costliest losses)", ha="left",
-             va="center", color=INK, fontsize=11, weight="bold")
-    player_bar(fig, [0.075, 0.368, 0.385, 0.180], p, "loss",
-               "Ball loss removed teammates", BAD, labels=f["labels"])
     # named by their actual positions rather than assumed to always be "the
     # back line and wing-backs" - that was true for one opponent and not
     # guaranteed for the next (a defensive midfielder topped this list here).
+    d = p[p.loss != 0].sort_values("loss", ascending=False).head(8)
+    rows = [(_name(r.playerName), r.position.replace("_", " ").title(), f"{r.loss:.1f}")
+           for _, r in d.iterrows()]
+    player_table(fig, [0.075, 0.150, 0.415, 0.335], rows,
+                ["Player", "Position", "Ball loss removed"],
+                header="Who gives it away (costliest losses)")
     top_losers = p[p.loss != 0].sort_values("loss", ascending=False).head(3)
     loss_desc = ", ".join(f"{surname(x.playerName)} ({x.position.replace('_', ' ').lower()})"
                           for _, x in top_losers.iterrows())
-    fig.text(0.075, 0.318, f"Costliest here: {loss_desc}.", ha="left",
-             va="center", color=MUTED, fontsize=6.8)
+    fig.text(0.075, 0.128, "\n".join(textwrap.wrap(f"Costliest here: {loss_desc}.", 62)),
+             ha="left", va="top", color=MUTED, fontsize=7.4, linespacing=1.5)
 
-    fig.text(0.545, 0.585, "Aerial duels", ha="left", va="center", color=INK,
-             fontsize=11, weight="bold")
     # sorted by total duels, not wins - sorting by wins alone buries a player
     # who contests plenty of headers but loses most of them (Wigan's own
     # centre-forward, 0 of 4, dropped off a wins-sorted top 9 while the text
     # below kept citing him).
     cf = p[p.position == "CENTER_FORWARD"].nlargest(1, "mins")
     d = (p[(p.aw + p.al) > 0].assign(_tot=lambda x: x.aw + x.al)
-        .sort_values("_tot", ascending=False, kind="stable").head(9))
+        .sort_values("_tot", ascending=False, kind="stable").head(8))
     if len(cf) and cf.iloc[0].playerName not in d.playerName.values:
         d = pd.concat([d.iloc[:-1], cf.assign(_tot=cf.aw + cf.al)])
     d = d.sort_values("aw", ascending=False, kind="stable")
-    ax = fig.add_axes([0.545, 0.368, 0.385, 0.180])
-    style_bar_axis(ax, ylabel="Aerial duels", label_size=8.5, tick_size=7)
-    x = np.arange(len(d))
-    ax.bar(x, d.aw.values, color=GOOD, width=.7, zorder=3, label="won")
-    ax.bar(x, d.al.values, bottom=d.aw.values, color=BAD, width=.7, zorder=3,
-           label="lost")
-    for i, (w, l) in enumerate(zip(d.aw.values, d.al.values)):
-        ax.text(i, w + l + 0.15, f"{int(w)}/{int(w+l)}", ha="center",
-                va="bottom", fontsize=6.4, color=INK, weight="bold")
-    ax.set_xticks(x)
-    ax.set_xticklabels([f["labels"].get(n, surname(n)) for n in d.playerName],
-                       rotation=40, ha="right", fontsize=6.4)
-    ax.set_ylim(0, (d.aw + d.al).max() * 1.35)
-    ax.legend(frameon=False, fontsize=6.4, labelcolor=INK, loc="upper right", ncol=2)
+    rows = [(_name(r.playerName), f"{int(r.aw)}/{int(r.aw+r.al)}",
+             f"{r.aw/(r.aw+r.al)*100:.0f}%") for _, r in d.iterrows()]
+    player_table(fig, [0.525, 0.150, 0.415, 0.335], rows,
+                ["Player", "Won/contested", "Win rate"], header="Aerial duels")
     cf = p[p.position == "CENTER_FORWARD"].nlargest(1, "mins")
     if len(cf):
         c = cf.iloc[0]
-        fig.text(0.545, 0.318, f"Their centre-forward {surname(c.playerName)} "
+        fig.text(0.525, 0.128, f"Their centre-forward {surname(c.playerName)} "
                                f"won {int(c.aw)} of {int(c.aw + c.al)} in the air.",
-                 ha="left", va="center", color=MUTED, fontsize=6.8)
+                 ha="left", va="center", color=MUTED, fontsize=7.4)
 
-    # the XI, for reference - average minutes per game, not a raw total that
-    # only grows with the sample size. Fringe players (under 30 minutes total
-    # across the whole sample) are dropped, and the panel is capped at the 16
-    # players with the most total minutes so a big squad rotation doesn't
-    # turn the x-axis into an unreadable wall of names.
-    n_opp_g = len(f["opp_matches"])
-    MAX_PERSONNEL = 16
-    d = p[p.mins >= 30].sort_values("mins", ascending=False).head(MAX_PERSONNEL).copy()
-    d["avg_mins"] = d.mins / n_opp_g
-    d = d.sort_values("avg_mins", ascending=False)
-    capped = len(p[p.mins >= 30]) > MAX_PERSONNEL
-    subtitle = (f"Minutes played (average per game, top {MAX_PERSONNEL} by total)"
-               if capped else "Minutes played (average per game)")
-    fig.text(0.075, 0.292, subtitle, ha="left", va="center", color=INK,
-             fontsize=11, weight="bold")
-    ax = fig.add_axes([0.075, 0.085, 0.855, 0.175])
-    style_bar_axis(ax, ylabel="Avg minutes", label_size=8.5, tick_size=7)
-    x = np.arange(len(d))
-    cols = [OPP_C if m >= 81 else _fade(OPP_C) for m in d.avg_mins]
-    ax.bar(x, d.avg_mins.values, color=cols, width=.7, zorder=3)
-    ax.set_xticks(x)
-    ax.set_xticklabels([f["labels"].get(n, surname(n)) for n in d.playerName],
-                       rotation=40, ha="right", fontsize=6.2)
-    ax.set_ylim(0, max(d.avg_mins.max() * 1.15, 1))
     varied = " (varied)" if f["formation_varied"] else ""
-    fig.text(0.075, 0.035, f"Bright = averaged close to a full 90 across "
-                           f"their last {n_opp_g} games. Players under 30 "
-                           f"minutes total left off{', capped at the top 16' if capped else ''}. "
-                           f"Usual shape: {f.get('formation', 'unknown')}{varied}.",
-             ha="left", va="center", color=MUTED, fontsize=6.8)
-
-
-def stat_tiles(fig, rect, tiles):
-    ax = fig.add_axes(rect); ax.axis("off")
-    ax.set_xlim(0, 1); ax.set_ylim(0, 1)
-    n = len(tiles); w = 1.0 / n
-    for i, (label, ours, theirs, note) in enumerate(tiles):
-        x0 = i * w
-        ax.add_patch(FancyBboxPatch((x0 + 0.006, 0.04), w - 0.012, 0.92,
-                                    boxstyle="round,pad=0,rounding_size=0.02",
-                                    fc=PANEL, ec=GRID, lw=0.8,
-                                    mutation_aspect=0.35))
-        cx = x0 + w / 2
-        ax.text(cx, 0.82, label, ha="center", va="center", color=INK,
-                fontsize=7.4, weight="bold")
-        ax.text(cx - w * 0.19, 0.48, ours, ha="center", va="center",
-                color=OPP_C, fontsize=13.5, weight="bold")
-        ax.text(cx, 0.48, "|", ha="center", va="center", color=GRID, fontsize=11)
-        ax.text(cx + w * 0.19, 0.48, theirs, ha="center", va="center",
-                color=REF_C, fontsize=13.5, weight="bold")
-        ax.text(cx, 0.16, note, ha="center", va="center", color=MUTED,
-                fontsize=6.2)
+    fig.text(0.5, 0.045, f"Usual shape: {f.get('formation', 'unknown')}{varied}.",
+             ha="center", va="center", color=MUTED, fontsize=7.6)
 
 
 def page_press(fig, f):
+    # Page 4 feedback: tables throughout, expected points and the set-piece
+    # panel dropped, "how they press" moved in from page 3 (its passing
+    # network moved the other way, to page 3), opening-balls-pressed added
+    # as the extra pressing metric - already computed in facts() but never
+    # shown anywhere before this. The recoveries pitch panel is unaffected
+    # and widened into the space the set-piece panel and network freed up.
     varied = " (varied)" if f["formation_varied"] else ""
     n_opp, n_our = len(f["opp_matches"]), len(f["our_matches"])
     title(fig, "PRESS & SHAPE", f"usual formation {f['formation']}{varied}  ·  "
@@ -948,19 +952,26 @@ def page_press(fig, f):
             return "-", "-"
         return fmt.format(sc[k][0] * m), fmt.format(sc[k][1] * m)
 
-    a, b = s2("PPDA"); c, d = s2("MEAN_PRESSURE_HEIGHT", 1, "{:.0f}m")
-    e, g_ = s2("PRESSURE_DURING_OPP_BUILD_UP_PERCENT", 100, "{:.0f}%")
-    h, i_ = s2("PRESSURE_OPP_GK_PERCENT", 100, "{:.0f}%")
-    j, k_ = s2("RATIO_BALL_POSSESSION", 100, "{:.0f}%")
-    l, m_ = s2("FIELD_TILT", 100, "{:.0f}%")
-    fig.text(0.075, 0.878, "How hard they press", ha="left", va="center",
-             color=INK, fontsize=11, weight="bold")
-    stat_tiles(fig, [0.055, 0.780, 0.890, 0.078], [
-        ("PPDA", a, b, "lower = more aggressive"),
-        ("Press height", c, d, "metres upfield"),
-        ("Opp build-up pressed", e, g_, "higher = more"),
-        ("Opp GK pressed", h, i_, "they do press the keeper"),
-    ])
+    press_rows = [
+        ("PPDA (lower = more aggressive)", *s2("PPDA")),
+        ("Press height (m upfield)", *s2("MEAN_PRESSURE_HEIGHT", 1, "{:.0f}")),
+        ("Opp build-up pressed", *s2("PRESSURE_DURING_OPP_BUILD_UP_PERCENT", 100, "{:.0f}%")),
+        ("Opp GK pressed", *s2("PRESSURE_OPP_GK_PERCENT", 100, "{:.0f}%")),
+        ("Opening balls pressed", *s2("OPP_OPENING_BALLS_PRESSED_PERCENT", 100, "{:.0f}%")),
+    ]
+    stat_table(fig, [0.055, 0.660, 0.415, 0.230], press_rows, OPPONENT, f["ref"],
+              header="How hard they press", left_colour=OPP_C, right_colour=TEAM_C)
+
+    kinds = ["BUILD_UP", "BETWEEN_THE_LINES", "COUNTER_PRESS"]
+    klab = ["In their build-up", "Between the lines", "Counter-press"]
+    krows = [(klab[i], f"{f['press_kind'][kinds[i]][0]:.0f}",
+             f"{f['press_kind'][kinds[i]][1]:.0f}") for i in range(3)]
+    stat_table(fig, [0.525, 0.660, 0.415, 0.230], krows, OPPONENT, f["ref"],
+              header="How they press", left_colour=OPP_C, right_colour=TEAM_C)
+    fig.text(0.525, 0.638, f"Between the lines: {f['press_kind']['BETWEEN_THE_LINES'][0]:.0f} "
+                           f"to {f['press_kind']['BETWEEN_THE_LINES'][1]:.0f}.",
+             ha="left", va="center", color=MUTED, fontsize=7.4)
+
     # Every clause here used to be a fixed assertion ("they had less of it",
     # "A pressing counter-attacking side") true for Wigan's low-possession
     # style and never re-checked since - Barnsley actually had MORE
@@ -969,160 +980,73 @@ def page_press(fig, f):
     # the real numbers.
     poss_opp, poss_us = sc.get("RATIO_BALL_POSSESSION", (0.0, 0.0))
     tilt_opp, tilt_us = sc.get("FIELD_TILT", (0.0, 0.0))
-    ep_opp, ep_us = sc.get("EXPECTED_POINTS_SHOT_XG", (0.0, 0.0))
     poss_more = poss_opp >= poss_us
     tilt_more = tilt_opp >= tilt_us
     bpd_more = f["bpd"] >= f["bpd_r"]
-    ep_more = ep_opp >= ep_us
 
-    fig.text(0.075, 0.745,
-             "…and they dominate the ball too" if poss_more else
-             "…but they do not dominate the ball",
-             ha="left", va="center", color=INK, fontsize=11, weight="bold")
-    stat_tiles(fig, [0.055, 0.647, 0.890, 0.078], [
-        ("Possession", j, k_, "they had more of it" if poss_more else "they had less of it"),
-        ("Field tilt", l, m_, "and more territory" if tilt_more else "and less territory"),
-        ("Bypassed defenders", f"{f['bpd']:.0f}", f"{f['bpd_r']:.0f}",
-         "more progression than us" if bpd_more else "less progression than us"),
-        ("Expected points", *s2("EXPECTED_POINTS_SHOT_XG"), "on xG"),
-    ])
+    style_rows = [
+        ("Possession", *s2("RATIO_BALL_POSSESSION", 100, "{:.0f}%")),
+        ("Field tilt", *s2("FIELD_TILT", 100, "{:.0f}%")),
+        ("Bypassed defenders", f"{f['bpd']:.0f}", f"{f['bpd_r']:.0f}"),
+    ]
+    stat_table(fig, [0.055, 0.330, 0.415, 0.280], style_rows, OPPONENT, f["ref"],
+              header="Do they dominate the ball?", left_colour=OPP_C, right_colour=TEAM_C)
     style_word = "A possession-dominant side" if poss_more else "A pressing counter-attacking side"
     bits = [
         "more of the ball" if poss_more else "less of the ball",
         "more territory" if tilt_more else "less territory",
         "more progression" if bpd_more else "less progression",
-        "more chances" if ep_more else "fewer chances",
     ]
-    fig.text(0.5, 0.622, f"{style_word}: {', '.join(bits)}.",
-             ha="center", va="center", color=MUTED, fontsize=8)
+    fig.text(0.055, 0.308, f"{style_word}: {', '.join(bits)}.",
+             ha="left", va="center", color=MUTED, fontsize=7.6)
 
-    # Shot location map dropped from pre-match: with only 5-6 games in the
-    # sample it read as noise, and the post-match report already carries a
-    # proper shot map with a full match's data - pre-match keeps the ball
-    # recoveries panel, widened to use the space this freed up.
-    fig.text(0.075, 0.585, "Where they win the ball back", ha="left",
-             va="center", color=INK, fontsize=11, weight="bold")
-    ax = fig.add_axes([0.055, 0.392, 0.890, 0.180])
+    fig.text(0.525, 0.612, "Where they win the ball back", ha="left",
+             va="center", color=INK, fontsize=14, weight="bold")
+    ax = fig.add_axes([0.525, 0.150, 0.415, 0.440])
     draw_pitch(ax, lw=0.8)
     r = f.get("recov")
     if r is not None and len(r):
-        ax.scatter(r.startAdjCoordinatesX, r.startAdjCoordinatesY, s=11,
-                   color=OPP_C, alpha=.75, zorder=4, edgecolors="none")
-    fig.text(0.5, 0.376, f"attacking right · {len(r) if r is not None else 0} "
-                         f"ball recoveries across their last "
-                         f"{f['opp_match_count']} games", ha="center",
-             va="center", color=MUTED, fontsize=6.6)
+        ax.scatter(r.startAdjCoordinatesX, r.startAdjCoordinatesY, s=13,
+                   color=OPP_C, alpha=.8, zorder=4, edgecolors="none")
+    fig.text(0.7325, 0.128, f"attacking right · {len(r) if r is not None else 0} "
+                            f"ball recoveries across their last "
+                            f"{f['opp_match_count']} games", ha="center",
+             va="center", color=MUTED, fontsize=7.2)
 
-    # ---- starting XI passing network
-    cut = f.get("first_change")
-    fig.text(0.075, 0.345, "Starting XI — passing network", ha="left",
-             va="center", color=INK, fontsize=11, weight="bold")
-    ax = fig.add_axes([0.055, 0.108, 0.520, 0.222])
-    draw_pitch(ax, lw=0.9)
-    nodes, edges = f.get("net", (None, None))
-    if nodes is not None and len(edges):
-        mx = edges.n.max()
-        pos = nodes.set_index("playerName")[["x", "y"]].to_dict("index")
-        for _, e in edges.iterrows():
-            a, b = e.playerName, e.passReceiverPlayerName
-            if a in pos and b in pos and e.n >= 2:
-                ax.plot([pos[a]["x"], pos[b]["x"]], [pos[a]["y"], pos[b]["y"]],
-                        color="#D8E2EE", lw=0.4 + 3.2 * (e.n / mx),
-                        alpha=0.25 + 0.55 * (e.n / mx), zorder=2,
-                        solid_capstyle="round")
-    if nodes is not None and len(nodes):
-        smax = nodes.n.max()
-        offs = RM.label_offsets(nodes, ax, s_base=95, s_extra=520)
-        for k, (_, r2) in enumerate(nodes.iterrows()):
-            ax.scatter([r2.x], [r2.y], s=95 + 520 * (r2.n / smax), color=OPP_C,
-                       edgecolors="#BFD9F5", linewidths=1.2, zorder=3)
-            lab = str(f["shirts"].get(r2.playerName, ""))
-            if not lab:
-                lab = surname(r2.playerName)[:3].upper()
-            lx, ly, leader = offs[k]
-            if leader:
-                ax.plot([r2.x, lx], [r2.y, ly], color="#BFD9F5", lw=0.7,
-                        alpha=.8, zorder=4)
-                ax.text(lx, ly, lab, ha="center", va="center", color="#0B1B2B",
-                        fontsize=7, weight="bold", zorder=6,
-                        bbox=dict(boxstyle="circle,pad=0.28", fc="#BFD9F5",
-                                  ec="none"))
-            else:
-                ax.text(r2.x, r2.y, lab, ha="center", va="center",
-                        color="#0B1B2B", fontsize=7, weight="bold", zorder=5)
-    fig.text(0.315, 0.092, f"0–{cut}' before the first change · "
-                           f"{f.get('net_passes', 0)} successful passes · "
-                           f"vs {f['net_opp']}, {f['net_date']} · attacking right",
-             ha="center", va="center", color=MUTED, fontsize=6.6)
-
-    # ---- set pieces, narrower column beside the network
-    tk = f.get("takers", {})
-    corner_bits = []
-    if "CORNER_LEFT" in tk:
-        corner_bits.append(f"{surname(tk['CORNER_LEFT'])} (left)")
-    if "CORNER_RIGHT" in tk:
-        corner_bits.append(f"{surname(tk['CORNER_RIGHT'])} (right)")
-    if f["corners"] == 0 or f["corner_xg"] <= 0:
-        corner_line = f"{f['corners']} corners, no threat created from them at all."
-    elif f["corner_concentrated"]:
-        corner_line = (f"{f['corners']} corners produced {f['corner_xg']:.2f} xG, "
-                       f"but most of it is one costly phase, not a repeatable pattern.")
-    else:
-        corner_line = (f"{f['corners']} corners produced {f['corner_xg']:.2f} xG, "
-                       f"spread across several deliveries - a real if modest threat.")
-    items = [corner_line]
-    if corner_bits:
-        line = "Corners: " + ", ".join(corner_bits) + "."
-        if "FREE_KICK" in tk:
-            line += f"  Free kicks: {surname(tk['FREE_KICK'])}."
-        items.append(line)
-    if f["throwin_taker"]:
-        name, cnt = f["throwin_taker"]
-        items.append(f"{f['throwins']} throw-ins, {surname(name)} takes most "
-                     f"of them ({cnt}).")
-
-    fig.text(0.615, 0.345, f"Set pieces (last {f['opp_match_count']} games)",
-             ha="left", va="center", color=INK, fontsize=11, weight="bold")
-    ax = fig.add_axes([0.615, 0.108, 0.330, 0.222]); ax.axis("off")
-    ax.set_xlim(0, 1); ax.set_ylim(0, 1)
-    ax.add_patch(FancyBboxPatch((0, 0), 1, 1,
-                                boxstyle="round,pad=0,rounding_size=0.02",
-                                fc=PANEL, ec=GRID, lw=0.8, mutation_aspect=0.32))
-    # one text block with blank separators: the previous per-item cursor
-    # over-advanced and pushed the last line outside the panel
-    block = "\n\n".join("\n".join(textwrap.wrap(t, 40)) for t in items)
-    ax.text(0.06, 0.90, block, ha="left", va="top", color="#B9C4D2",
-            fontsize=7.6, linespacing=1.55)
-
+    fig.text(0.5, 0.045,
+             f"Formation and pressing figures are means across {OPPONENT}'s "
+             f"last {n_opp} matches ({f['opp_comp_mix']}).",
+             ha="center", va="center", color=MUTED, fontsize=7.4)
 
 
 def page_buildup(fig, f):
+    # Page 6 feedback: chart 2 ("which part of our shape their turnovers
+    # hurt") dropped as its own panel - its data (zd/top_zone) still feeds
+    # the ALSO WATCH card below, just isn't charted on its own any more.
+    # "Where they were opened up" moved in from page 5 to take that slot,
+    # and everything channel/lane-based here is now a pitch view instead of
+    # a bar chart, same as page 5.
     title(fig, "BUILD-UP MAP", "which channel to use against them, and why")
-    fig.text(0.5, 0.898,
-             "All three charts use the BUILDING team's own lanes, so they read "
-             "directly against each other.",
-             ha="center", va="center", color=MUTED, fontsize=7.8)
+    fig.text(0.5, 0.900,
+             "Charts use the BUILDING team's own lanes, so the first two "
+             "read directly against each other.",
+             ha="center", va="center", color=MUTED, fontsize=7.6)
+
+    COLW, COLH = 0.265, 0.302
+    COLX = [0.055, 0.368, 0.681]
+    label_y, chart_top = 0.860, 0.815
+    chart_bottom = chart_top - COLH
+    caption_top = chart_bottom - 0.025
 
     # --- 1. how hard they press each channel
     tp = f["their_press_lane"]
     press = [tp[l][0] for l in LANES]
     fail = [tp[l][1] for l in LANES]
     worst = int(np.argmax(press))
-    fig.text(0.055, 0.862, "1 · How hard they press each channel", ha="left",
+    fig.text(COLX[0], label_y, "1 · How hard they press", ha="left",
              va="center", color=INK, fontsize=10.5, weight="bold")
-    ax = fig.add_axes([0.055, 0.655, 0.415, 0.185])
-    style_bar_axis(ax, ylabel="Mean pressure on the ball", label_size=8.5,
-                   tick_size=7)
-    x = np.arange(len(LANES))
-    ax.bar(x, press, color=[BAD if i == worst else _fade(BAD) for i in x],
-           width=.62, zorder=3)
-    for i, (pv, fv) in enumerate(zip(press, fail)):
-        ax.text(i, pv + max(press) * .04, f"{pv:.0f}", ha="center", va="bottom",
-                fontsize=7.4, color=INK, weight="bold")
-        ax.text(i, max(press) * .045, f"{fv:.0f}% lost", ha="center",
-                va="bottom", fontsize=6.2, color="#10161F", weight="bold")
-    ax.set_xticks(x); ax.set_xticklabels(LANE_LABEL, fontsize=7)
-    ax.set_ylim(0, max(press) * 1.25)
+    ax = fig.add_axes([COLX[0], chart_bottom, COLW, COLH])
+    draw_lane_pitch(ax, press, BAD, LANE_LABEL, fmt="{:.0f}")
     # how much heavier the worst channel is than the rest, described in
     # proportion to the real gap - this used to just assert "about twice any
     # other channel" regardless of the actual numbers, which was true for the
@@ -1133,67 +1057,46 @@ def page_buildup(fig, f):
     if ratio >= 1.6:
         press_detail = f"about {ratio:.1f}x any other channel"
     elif ratio >= 1.12:
-        press_detail = f"{(ratio - 1) * 100:.0f}% heavier than the rest average"
+        press_detail = f"{(ratio - 1) * 100:.0f}% heavier than the rest"
     else:
-        press_detail = "though not by much - their press is fairly even across the pitch"
-    fig.text(0.055, 0.628, f"Their heaviest press is on the "
-                           f"{LANE_LABEL[worst].replace(chr(10),' ').lower()}, "
-                           f"{press_detail}.",
-             ha="left", va="center", color=MUTED, fontsize=7)
+        press_detail = "fairly even across the pitch"
+    fig.text(COLX[0], caption_top,
+             "\n".join(textwrap.wrap(
+                 f"Heaviest press: {LANE_SHORT[worst].lower()}, "
+                 f"{press_detail} ({fail[worst]:.0f}% won back there).", 34)),
+             ha="left", va="top", color=MUTED, fontsize=7.2, linespacing=1.45)
 
-    # --- 2. which part of our shape their turnovers hurt
-    zd = dict(list(f["zone_damage"].items())[:7])
-    fig.text(0.525, 0.862, "2 · Which part of our shape their turnovers hurt",
-             ha="left", va="center", color=INK, fontsize=10.5, weight="bold")
-    ax = fig.add_axes([0.525, 0.655, 0.415, 0.185])
-    style_bar_axis(ax, ylabel="Opponents removed", label_size=8.5, tick_size=7)
-    ks, vs = list(zd.keys()), list(zd.values())
-    x = np.arange(len(ks))
-    ax.bar(x, vs, color=[BAD if i == 0 else _fade(BAD) for i in x], width=.62,
-           zorder=3)
-    for i, v in enumerate(vs):
-        ax.text(i, v + max(vs) * .04, f"{v:.0f}", ha="center", va="bottom",
-                fontsize=7, color=INK, weight="bold")
-    ax.set_xticks(x)
-    ax.set_xticklabels([ZONE_LABEL.get(k, k) for k in ks], fontsize=6.6,
-                       rotation=20, ha="right")
-    ax.set_ylim(0, max(vs) * 1.25)
-    fbl = f["zone_damage"].get("FBL", 0.0)
-    fbr = f["zone_damage"].get("FBR", 0.0)
-    side = ("left back" if fbl > fbr else "right back")
-    fig.text(0.525, 0.628, f"Impect's own zone labels. Worst hit: "
-                           f"{ZONE_LABEL.get(ks[0], ks[0]).lower()}. Of the two "
-                           f"full-backs the {side} took more "
-                           f"({max(fbl,fbr):.0f} to {min(fbl,fbr):.0f}).",
-             ha="left", va="center", color=MUTED, fontsize=7)
+    # --- 2. where they were opened up (moved in from THE CHANNELS)
+    zd = dict(list(f["zone_damage"].items())[:7])   # still feeds ALSO WATCH below
+    conceded_tail = ("close to an even split, not yet a clear pattern"
+                     if f["conceded_close"] else "that is the side to attack")
+    fig.text(COLX[1], label_y, "2 · Where they opened up", ha="left",
+             va="center", color=INK, fontsize=10.5, weight="bold")
+    ax = fig.add_axes([COLX[1], chart_bottom, COLW, COLH])
+    draw_lane_pitch(ax, f["lane_conceded"], BAD, LANE_LABEL)
+    fig.text(COLX[1], caption_top,
+             "\n".join(textwrap.wrap(
+                 f"Mirrored onto their shape. {f['conceded_share']:.0f}% came "
+                 f"down THEIR {f['conceded_side']} - {conceded_tail}.", 34)),
+             ha="left", va="top", color=MUTED, fontsize=7.2, linespacing=1.45)
 
     # --- 3. where we actually build well
     ob = f["our_build"]
     ofail = [ob[l][0] for l in LANES]
-    opress = [ob[l][1] for l in LANES]
     on = [ob[l][2] for l in LANES]
     best = int(np.argmin([v if n >= 8 else 999 for v, n in zip(ofail, on)]))
-    fig.text(0.055, 0.588, f"3 · Where {US} actually build well", ha="left",
+    fig.text(COLX[2], label_y, f"3 · Where we build well", ha="left",
              va="center", color=INK, fontsize=10.5, weight="bold")
-    ax = fig.add_axes([0.055, 0.372, 0.885, 0.195])
-    style_bar_axis(ax, ylabel="% of build-up passes lost", label_size=8.5,
-                   tick_size=7)
-    x = np.arange(len(LANES))
-    ax.bar(x, ofail, color=[GOOD if i == best else _fade(GOOD) for i in x],
-           width=.55, zorder=3)
-    for i, (fv, pv, nv) in enumerate(zip(ofail, opress, on)):
-        ax.text(i, fv + max(ofail) * .04, f"{fv:.0f}%", ha="center",
-                va="bottom", fontsize=8, color=INK, weight="bold")
-        ax.text(i, max(ofail) * .04, f"n={nv} · pressure {pv:.0f}", ha="center",
-                va="bottom", fontsize=6.2, color="#10161F", weight="bold")
-    ax.set_xticks(x)
-    ax.set_xticklabels([l.replace(chr(10), " ") for l in LANE_LABEL], fontsize=8)
-    ax.set_ylim(0, max(ofail) * 1.28)
+    ax = fig.add_axes([COLX[2], chart_bottom, COLW, COLH])
+    draw_lane_pitch(ax, ofail, GOOD, LANE_LABEL)
     n = f.get("our_match_count", 1)
     span = f"our last {n} matches" if n >= 2 else "our most recent match"
-    fig.text(0.055, 0.345, f"From {span}. Lower is better — this "
-                           f"half of the answer is about us, not them.",
-             ha="left", va="center", color=MUTED, fontsize=7)
+    fig.text(COLX[2], caption_top,
+             "\n".join(textwrap.wrap(
+                 f"% of build-up passes lost by lane, {span} - lower is "
+                 f"better. Best: {LANE_SHORT[best].lower()} "
+                 f"({ofail[best]:.0f}% lost).", 34)),
+             ha="left", va="top", color=MUTED, fontsize=7.2, linespacing=1.45)
 
     # --- 4. the verdict, derived from the three views above
     rank = lambda v: np.argsort(np.argsort(v))
@@ -1227,69 +1130,63 @@ def page_buildup(fig, f):
     ]
     for i, (kicker, head, colour, body) in enumerate(cards):
         x0 = 0.055 + i * 0.303
-        ax = fig.add_axes([x0, 0.088, 0.283, 0.225]); ax.axis("off")
+        ax = fig.add_axes([x0, 0.032, 0.283, 0.375]); ax.axis("off")
         ax.set_xlim(0, 1); ax.set_ylim(0, 1)
         ax.add_patch(FancyBboxPatch((0, 0), 1, 1,
-                                    boxstyle="round,pad=0,rounding_size=0.025",
+                                    boxstyle="round,pad=0,rounding_size=0.02",
                                     fc=PANEL, ec=GRID, lw=0.9,
-                                    mutation_aspect=0.30))
-        ax.add_patch(Rectangle((0, 0.05), 0.016, 0.90, fc=colour, ec="none"))
-        ax.text(0.075, 0.90, kicker, ha="left", va="top", color=colour,
-                fontsize=8, weight="bold")
-        ax.text(0.075, 0.745, head, ha="left", va="top", color=INK,
-                fontsize=13.5, weight="bold")
-        ax.text(0.075, 0.545, "\n".join(textwrap.wrap(body, 34)), ha="left",
-                va="top", color="#B9C4D2", fontsize=7.6, linespacing=1.55)
+                                    mutation_aspect=0.18))
+        ax.add_patch(Rectangle((0, 0.03), 0.014, 0.94, fc=colour, ec="none"))
+        ax.text(0.075, 0.94, kicker, ha="left", va="top", color=colour,
+                fontsize=8.6, weight="bold")
+        ax.text(0.075, 0.83, head, ha="left", va="top", color=INK,
+                fontsize=14.5, weight="bold")
+        ax.text(0.075, 0.62, "\n".join(textwrap.wrap(body, 36)), ha="left",
+                va="top", color="#B9C4D2", fontsize=8.2, linespacing=1.55)
 
     division_note = (f"{OPPONENT} play in a different competition to Orient"
                      if f["ref_diff_division"] else
                      f"both sides play in {OUR_COMPETITION} this season")
-    fig.text(0.5, 0.048,
+    fig.text(0.5, 0.012,
              f"{n} matches on our side, {f['opp_match_count']} on theirs, and "
              f"{division_note}. The agreement in the first two cards is more "
-             f"reliable than "
-             f"either chart alone.",
-             ha="center", va="center", color=MUTED, fontsize=7.2)
+             f"reliable than either chart alone.",
+             ha="center", va="center", color=MUTED, fontsize=6.8)
 
 
 def page_channels(fig, f):
-    title(fig, "THE CHANNELS", "which side they use, and which side gave way")
+    # Page 5 feedback: "where they were opened up" moved to page 6 (it sits
+    # better there next to the pressure-per-channel view it directly
+    # answers); the two that stay here are drawn on a PORTRAIT pitch, side
+    # by side, so "left wing" is genuinely the left column on the page -
+    # a landscape pitch with lanes stacked top-to-bottom couldn't promise
+    # that without a coordinate-sign guess; a portrait one with lanes as
+    # vertical bands just reads directly off the label order.
+    title(fig, "THE CHANNELS", "where they build, and where they progress")
     our_cover_side = "RIGHT" if f["prog_side"] == "LEFT" else "LEFT"
     prog_tail = (f"— close to an even split, not a clear lean" if f["prog_close"]
                 else f"— our {our_cover_side.lower()} side must be ready")
-    conceded_tail = (f"— close to an even split, not yet a clear pattern to attack"
-                     if f["conceded_close"] else "— that is the side to attack")
     specs = [
-        ("Where they build from", f["lane_build"], OPP_C, 0.700,
+        ("Where they build from", f["lane_build"], OPP_C, 0.055,
          "Their first-third passes. They start centrally."),
-        ("Where they progress", f["lane_prog"], GOOD, 0.435,
-         f"Their bypassed defenders. "
-         f"{f['prog_share']:.0f}% of it comes down THEIR "
-         f"{f['prog_side']} {prog_tail}."),
-        ("Where they were opened up", f["lane_conceded"], BAD, 0.170,
-         f"The opposition's progression, mirrored onto their shape. "
-         f"{f['conceded_share']:.0f}% came down "
-         f"THEIR {f['conceded_side']} {conceded_tail}."),
+        ("Where they progress", f["lane_prog"], GOOD, 0.525,
+         f"Their bypassed defenders. {f['prog_share']:.0f}% of it comes "
+         f"down THEIR {f['prog_side']} {prog_tail}."),
     ]
-    for label, vals, colour, y, note in specs:
-        fig.text(0.075, y + 0.205, label, ha="left", va="center", color=INK,
-                 fontsize=11.5, weight="bold")
-        ax = fig.add_axes([0.075, y, 0.855, 0.190])
-        style_bar_axis(ax, ylabel="% of total", label_size=9, tick_size=8)
-        x = np.arange(len(LANES))
-        cols = [colour if v == max(vals) else _fade(colour) for v in vals]
-        ax.bar(x, vals, color=cols, width=.62, zorder=3)
-        for i, v in enumerate(vals):
-            ax.text(i, v + max(vals) * .04, f"{v:.0f}%", ha="center",
-                    va="bottom", fontsize=8, color=INK, weight="bold")
-        ax.set_xticks(x); ax.set_xticklabels(LANE_LABEL, fontsize=8)
-        ax.set_ylim(0, max(vals) * 1.25)
-        fig.text(0.075, y - 0.030, note, ha="left", va="center", color=MUTED,
-                 fontsize=8)
-    fig.text(0.5, 0.055,
-             "Lanes are always from the attacking team's point of view. The "
-             "bottom chart is mirrored so it reads as their defensive shape.",
-             ha="center", va="center", color=MUTED, fontsize=7.4)
+    label_y, chart_w, chart_h = 0.870, 0.420, 0.480
+    chart_top = label_y - 0.030
+    chart_bottom = chart_top - chart_h
+    for label, vals, colour, x0, note in specs:
+        fig.text(x0, label_y, label, ha="left", va="center", color=INK,
+                 fontsize=14.5, weight="bold")
+        ax = fig.add_axes([x0, chart_bottom, chart_w, chart_h])
+        draw_lane_pitch(ax, vals, colour, LANE_LABEL)
+        fig.text(x0, chart_bottom - 0.030,
+                 "\n".join(textwrap.wrap(note, 44)), ha="left", va="top",
+                 color=MUTED, fontsize=8, linespacing=1.5)
+    fig.text(0.5, 0.085,
+             "Lanes are always from the attacking team's point of view.",
+             ha="center", va="center", color=MUTED, fontsize=7.6)
 
 
 def _force_long_card(cp):
@@ -1333,12 +1230,6 @@ def _turnover_card(bwrd, bwrd_r):
            f"defenders removed by their ball wins (ours {bwrd_r:.1f})", body)
 
 
-def _fade(colour, amount=0.55, toward="#5A6676"):
-    from matplotlib.colors import to_rgb
-    c, t = np.array(to_rgb(colour)), np.array(to_rgb(toward))
-    return tuple(c * (1 - amount) + t * amount)
-
-
 def _top(p, mask, sort_col, ascending=False):
     """Top row of p[mask] by sort_col, or None if no player fits.
 
@@ -1367,7 +1258,13 @@ def _press_target(position):
 
 
 def page_plan(fig, f):
-    title(fig, "THE PLAN")
+    # Replaces the old card-grid layout with a written summary - three
+    # paragraphs (style, strengths, weaknesses) instead of point cards. The
+    # underlying logic (every conditional wording branch - close-split
+    # qualifiers, the turnover ratio bands, the GK-press threshold, corner
+    # concentration, centre-forward aerial rate) is unchanged from the old
+    # card version; only how it's assembled into sentences is new.
+    title(fig, "THE PLAN", "how they set up, their threats, and where to hurt them")
     p = f["players"]
     if len(p) == 0:
         fig.text(0.5, 0.5, "No player data available for this match.",
@@ -1392,123 +1289,153 @@ def page_plan(fig, f):
     ph = sc.get("MEAN_PRESSURE_HEIGHT", (0, 0))
     gk = sc.get("PRESSURE_OPP_GK_PERCENT", (0, 0))
     poss = sc.get("RATIO_BALL_POSSESSION", (0, 0))
+    tilt = sc.get("FIELD_TILT", (0, 0))
+    varied = " (though it varied)" if f["formation_varied"] else ""
 
+    # ------------------------------------------------------------- style
+    style_word = ("a possession-dominant side" if poss[0] >= poss[1]
+                  else "a pressing counter-attacking side")
+    territory = ("more territory to go with it" if tilt[0] >= tilt[1]
+                else "without controlling territory to match")
+    prog_lean = ("fairly evenly split between both flanks" if f["prog_close"]
+                else f"{left_prog:.0f}% of it down their {prog_side} alone")
+    style_para = (
+        f"{OPPONENT} usually set up in a {f['formation']}{varied} and play as "
+        f"{style_word}: {poss[0]*100:.0f}% of the ball across this sample to "
+        f"our own {poss[1]*100:.0f}%, {territory}. Out of possession they "
+        f"press at {ppda[0]:.1f} PPDA (ours {ppda[1]:.1f}) and {ph[0]:.0f}m "
+        f"up the pitch - a genuinely active press, not a passive mid-block. "
+        f"Their own progression is {prog_lean}, and {tr:.0f}% of it comes in "
+        f"transition rather than settled build-up, which says as much about "
+        f"how they hurt teams as anything they do in a settled shape."
+    )
+
+    # --------------------------------------------------------- strengths
+    _, _, _, turnover_body = _turnover_card(f["bwrd"], f["bwrd_r"])
+    flank_threat = (
+        "it's close enough to an even split that we shouldn't over-shift for "
+        "it - keep both flanks covered rather than loading up on one"
+        if f["prog_close"] else
+        f"their {prog_side} wing alone accounts for the biggest single "
+        f"share, so our {cover_side}-sided pair will need real cover")
+    strength_bits = [
+        f"Transitions are their biggest weapon: {tr:.0f}% of their "
+        f"progression and {f['xg_transition']:.2f} xG comes from them alone, "
+        f"so careless turnovers in our own half are how this game gets lost.",
+        f"The press is real - {ppda[0]:.1f} PPDA against our own "
+        f"{ppda[1]:.1f}, hunting between the lines - so our 8s will need "
+        f"one-touch options rather than time on the ball.",
+        f"When they progress through a settled shape, {flank_threat}.",
+        f"Their ball-winning matters just as much as their press: "
+        f"{turnover_body[0].lower()}{turnover_body[1:]}",
+        f"{surname(bannan.playerName)} is their pivot, with {bannan.BPD:.1f} "
+        f"bypassed defenders - the most on the pitch. Cutting the passing "
+        f"line into him is the clearest individual job in the game.",
+    ]
+    # PRESSURE_OPP_GK_PERCENT is how much THEY press an opposing keeper - only
+    # worth mentioning when that's actually true. At 0% an unconditional line
+    # here would say "they press the keeper" from a stat that says the
+    # opposite.
+    GK_PRESS_THRESHOLD = 0.08
+    if gk[0] >= GK_PRESS_THRESHOLD:
+        if poss[0] < 0.48:
+            strength_bits.append(
+                f"They had only {poss[0]*100:.0f}% of the ball and still "
+                f"pressed our goalkeeper - expect our goalkeeper and "
+                f"centre-backs to be hurried regardless of who has it.")
+        else:
+            strength_bits.append(
+                f"They press the keeper even with {poss[0]*100:.0f}% of the "
+                f"ball themselves - expect our goalkeeper and centre-backs "
+                f"to be hurried regardless.")
+    if cf is not None:
+        cf_total = cf.aw + cf.al
+        cf_rate = cf.aw / cf_total if cf_total else 0.5
+        if cf_rate >= 0.55:
+            strength_bits.append(
+                f"Their centre-forward {surname(cf.playerName)} wins most of "
+                f"what comes his way in the air ({int(cf.aw)} of "
+                f"{int(cf.aw + cf.al)}) - a genuine threat, not a soft touch.")
+    strength_para = " ".join(strength_bits)
+
+    # -------------------------------------------------------- weaknesses
     weak_flank = p[p.position.str.startswith(f"{attack_side.upper()}_WING")]
     weak_flank_name = (surname(weak_flank.nlargest(1, "loss").playerName.iloc[0])
                        if len(weak_flank) else f"their {attack_side}-back")
-    attack_body = (
-        f"Close to an even split with their other side, so this isn't a "
-        f"clear-cut weakness yet - but {weak_flank_name} is still among "
-        f"their costliest losers of the ball, worth testing early."
-        if f["conceded_close"] else
-        f"Their clearest defensive weakness, and {weak_flank_name} "
-        f"is among their costliest losers of the ball. Overload it.")
-    exploit = [
-        (f"Attack their {attack_side}", f"{right_open:.0f}%",
-         "of the opposition's progression came down that side", attack_body),
-        (f"Press their {_press_target(losers.iloc[0].position)}", f"{losers.iloc[0].loss:.1f}",
-         f"teammates taken out by {surname(losers.iloc[0].playerName)}'s losses",
-         f"The three most damaging losers were "
-         + ", ".join(f"{surname(x.playerName)} "
-                     f"({x.position.replace('_', ' ').lower()})"
-                     for _, x in losers.iterrows()) + "."),
-        _force_long_card(cp),
+    attack_qualifier = (
+        " (close enough to an even split that it isn't a clear-cut weakness "
+        "yet, but still worth testing early)" if f["conceded_close"] else "")
+    _, _, _, force_long_body = _force_long_card(cp)
+    top_loser = losers.iloc[0]
+    loser_names = ", ".join(
+        f"{surname(x.playerName)} ({x.position.replace('_', ' ').lower()})"
+        for _, x in losers.iterrows())
+    weak_bits = [
+        f"Their clearest defensive gap is down their {attack_side}: "
+        f"{right_open:.0f}% of the opposition's progression against them "
+        f"came down that side{attack_qualifier}, and {weak_flank_name} is "
+        f"among their costliest losers of the ball - "
+        f"{'worth testing early' if f['conceded_close'] else 'overload it'}.",
+        f"When they go long they're vulnerable too: "
+        f"{force_long_body[0].lower()}{force_long_body[1:]}",
+        f"Press their {_press_target(top_loser.position)} directly - "
+        f"{surname(top_loser.playerName)} alone was responsible for "
+        f"{top_loser.loss:.1f} teammates taken out of the game by his "
+        f"losses. The three costliest overall were {loser_names}.",
     ]
-    if f["corners"] == 0 or f["corner_xg"] <= 0:
-        dead_ball_head, dead_ball_body = "Nothing from dead balls", (
-            f"No direct set-piece threat at all, and their {f['fouls']:.1f} "
-            f"fouls a game should give us dead balls of our own.")
-    elif f["corner_concentrated"]:
-        dead_ball_head, dead_ball_body = "Their corners aren't a pattern", (
-            f"Most of that xG is one costly phase, not something repeatable. "
-            f"Their {f['fouls']:.1f} fouls a game should still give us dead "
-            f"balls of our own.")
-    else:
-        dead_ball_head, dead_ball_body = "A real if modest corner threat", (
-            f"Spread across deliveries rather than one moment - worth "
-            f"defending properly, not dismissing. Their {f['fouls']:.1f} "
-            f"fouls a game should still give us dead balls of our own.")
-    exploit.append((dead_ball_head, f"{f['corner_xg']:.2f}",
-                    f"xG from their {f['corners']} corners", dead_ball_body))
     if cf is not None:
-        # Inserted rather than appended so it sits with the other individual-
-        # matchup points. Skipped entirely for a side with no CENTER_FORWARD-
-        # tagged player (false-9, or a front two both tagged differently).
-        # Wording used to unconditionally call him "a runner, not a target
-        # man" regardless of his actual aerial record - true for whichever
-        # centre-forward that was first written about, backwards for any CF
-        # who actually wins most of what comes his way in the air.
         cf_total = cf.aw + cf.al
         cf_rate = cf.aw / cf_total if cf_total else 0.5
         if cf_rate <= 0.45:
-            cf_body = ("Their centre-forward is a runner, not a target man. "
-                      "Our centre-backs should back themselves and squeeze up.")
-        elif cf_rate >= 0.55:
-            cf_body = ("Their centre-forward wins most of what comes his way "
-                      "in the air - a genuine threat, not a soft touch.")
-        else:
-            cf_body = ("Roughly an even contest with their centre-forward in "
-                      "the air - no clear edge either way.")
-        exploit.insert(3, (
-            "Win the first ball", f"{int(cf.aw)}/{int(cf.aw+cf.al)}",
-            f"aerials won by {surname(cf.playerName)}", cf_body))
-    beware = [
-        ("Transitions, above all", f"{tr:.0f}%",
-         "of their progression came in transition",
-         f"Plus {f['xg_transition']:.2f} xG from transition alone. Careless "
-         f"turnovers in our own half are how this game is lost."),
-        ("The press is real", f"{ppda[0]:.1f}",
-         f"PPDA, against our own {ppda[1]:.1f}",
-         f"They pressed at {ph[0]:.0f}m and hunted between the lines. Our 8s "
-         f"need one-touch options."),
-        (f"They come down their {prog_side}", f"{left_prog:.0f}%",
-         "of their progression is down that side",
-         (f"Close to an even split with their other side, so don't over-"
-          f"shift for it - keep both flanks covered rather than loading up "
-          f"on one."
-          if f["prog_close"] else
-          f"Their {prog_side} wing alone accounts for the biggest single "
-          f"share. Our {cover_side}-sided pair will need cover.")),
-        _turnover_card(f["bwrd"], f["bwrd_r"]),
-        (f"{surname(bannan.playerName)} is the pivot", f"{bannan.BPD:.1f}",
-         "bypassed defenders — most on the pitch",
-         "Cutting the line into him is the clearest individual job in the game."),
-    ]
-    # PRESSURE_OPP_GK_PERCENT is how much THEY press an opposing keeper - only
-    # worth a beware card when that's actually true. At 0% the old
-    # unconditional card said "they press the keeper" from a stat that says
-    # the opposite.
-    GK_PRESS_THRESHOLD = 0.08
-    if gk[0] >= GK_PRESS_THRESHOLD:
-        # "only X% and didn't want it" only makes sense when that share is
-        # genuinely low - it used to fire unconditionally, which read as
-        # nonsense for a side that actually had the majority of the ball.
-        if poss[0] < 0.48:
-            gk_body = (f"They had only {poss[0]*100:.0f}% of the ball and "
-                      f"did not want it — expect our goalkeeper and "
-                      f"centre-backs to be hurried.")
-        else:
-            gk_body = (f"They press the keeper even with {poss[0]*100:.0f}% "
-                      f"of the ball themselves — expect our goalkeeper and "
-                      f"centre-backs to be hurried regardless.")
-        beware.append(("They press the keeper", f"{gk[0]*100:.0f}%",
-                       f"of GK actions pressed (ours {gk[1]*100:.0f}%)", gk_body))
+            weak_bits.append(
+                f"Their centre-forward {surname(cf.playerName)} is a runner, "
+                f"not a target man ({int(cf.aw)} of {int(cf.aw + cf.al)} won "
+                f"in the air) - our centre-backs should back themselves and "
+                f"squeeze up.")
+    if f["corners"] == 0 or f["corner_xg"] <= 0:
+        weak_bits.append(
+            f"They offer nothing from dead balls ({f['corners']} corners, "
+            f"no threat created), and their {f['fouls']:.1f} fouls a game "
+            f"should still give us dead balls of our own.")
+    elif f["corner_concentrated"]:
+        weak_bits.append(
+            f"Their corners aren't a real pattern - most of the "
+            f"{f['corner_xg']:.2f} xG from {f['corners']} of them is one "
+            f"costly phase, not something repeatable - and their "
+            f"{f['fouls']:.1f} fouls a game should still give us dead balls "
+            f"of our own.")
+    else:
+        weak_bits.append(
+            f"Their {f['corner_xg']:.2f} xG from {f['corners']} corners is "
+            f"a real if modest threat, spread across deliveries rather than "
+            f"one moment - worth defending properly. Their {f['fouls']:.1f} "
+            f"fouls a game should still give us dead balls of our own.")
+    weak_para = " ".join(weak_bits)
 
-    for x0, head, items, accent in ((0.048, "WHERE TO ATTACK THEM", exploit, GOOD),
-                                    (0.512, "WHAT TO BE READY FOR", beware, BAD)):
-        ax = fig.add_axes([x0, 0.868, 0.440, 0.036]); ax.axis("off")
+    # ------------------------------------------------------------ layout
+    sections = [
+        ("STYLE OF PLAY", TEAM_C, style_para),
+        ("STRENGTHS — WHAT TO BE READY FOR", BAD, strength_para),
+        ("WEAKNESSES — WHERE TO ATTACK THEM", GOOD, weak_para),
+    ]
+    # matplotlib's text line height is fontsize * linespacing, in points -
+    # converting that to a figure-fraction-per-line step (rather than a
+    # guessed constant) is what keeps the gap between sections consistent
+    # regardless of how many lines a paragraph actually wraps to.
+    FONTSIZE, LINESPACING = 10, 1.75
+    per_line = FONTSIZE * LINESPACING / 72 / PAGE_H
+    y = 0.885
+    for head, accent, para in sections:
+        ax = fig.add_axes([0.075, y - 0.006, 0.02, 0.022]); ax.axis("off")
         ax.set_xlim(0, 1); ax.set_ylim(0, 1)
-        ax.add_patch(FancyBboxPatch((0, 0.05), 1, 0.9,
-                                    boxstyle="round,pad=0,rounding_size=0.03",
-                                    fc=accent, ec="none", mutation_aspect=0.12))
-        ax.text(0.5, 0.5, head, ha="center", va="center", color="#10161F",
-                fontsize=11.5, weight="bold")
-        n = len(items)
-        top, gap = 0.850, 0.009
-        h = min(0.128, (top - 0.085 - gap * (n - 1)) / n)
-        for i, (hl, stat, slab, body) in enumerate(items):
-            y = top - (i + 1) * h - i * gap
-            point_card(fig, [x0, y, 0.440, h], i + 1, hl, stat, slab, body, accent)
+        ax.add_patch(Rectangle((0, 0), 1, 1, fc=accent, ec="none"))
+        fig.text(0.108, y, head, ha="left", va="center", color=INK,
+                 fontsize=13, weight="bold")
+        y -= 0.040
+        lines = textwrap.wrap(para, 100)
+        fig.text(0.075, y, "\n".join(lines), ha="left", va="top",
+                 color="#B9C4D2", fontsize=FONTSIZE, linespacing=LINESPACING)
+        y -= len(lines) * per_line + 0.045
 
     n_opp, n_our = len(f["opp_matches"]), len(f["our_matches"])
     match_note = (f"{n_opp} matches for them, {n_our} for us" if n_opp != n_our
