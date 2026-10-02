@@ -1,28 +1,30 @@
 # Leyton Orient match analysis
 
-An analytics pipeline for **Leyton Orient**, built on **Impect** match-level
-API data. It is not a one-off recreation of a single report — it is the
-club's running toolkit for analysing every match across a season: scouting
-the next opponent before kick-off, debriefing every match Orient plays
-afterward, breaking down set-piece routines for both teams, and tracking
-form, minutes and player impact across the whole campaign. `dashboard.html`
-is the front door to all of it.
+An analytics pipeline *and self-service web platform* for **Leyton Orient**,
+built on **Impect** match-level API data. It is not a one-off recreation of
+a single report — it is the club's running toolkit for analysing every
+match across a season: scouting the next opponent before kick-off,
+debriefing every match Orient plays afterward, breaking down set-piece
+routines for both teams, and tracking form, minutes and player impact
+across the whole campaign. `webapp.py` is the front door to all of it —
+one dashboard, reachable from a browser, that a coach's assistant can run
+end to end without ever opening a terminal.
 
 The visual language (dark navy ground, geometric sans, two-team-colour
-charts) started as a recreation of a single, now-retired Wycombe Wanderers
-template PDF — but the report types, the data pipeline, the season tracker,
-and the dashboard were all built from there, for every fixture Orient
-plays, not for that one match.
+charts, picture-style tables) started as a recreation of a single, now-
+retired Wycombe Wanderers template PDF — but the report types, the data
+pipeline, the season tracker, and the dashboard were all built from there,
+for every fixture Orient plays, not for that one match.
 
 ## What this produces
 
 | Output | Built by | Covers |
 |---|---|---|
-| **Post-Match Report** | `build_report.py` | One played match: full team stats, set pieces, personnel, out-of-possession, Performance Review, and (when real notes exist) a graded Coach's Brief |
-| **Pre-Match Analysis** | `build_prematch.py` | An upcoming opponent's recent form vs Orient's own, aggregated across each side's last N cached matches |
-| **Corner Report** | `build_corners.py` | Both sides' corner routines for the same fixture — delivery zones, takers, first contact, defensive vulnerabilities |
-| **Season Tracker** | `build_season.py` | `season-tracker.html` — league table, form, set-piece efficiency, minutes/workload, most-impactful and best/worst individual performances, upcoming fixtures, all for the current season |
-| **Dashboard** | hand-maintained | `dashboard.html` — embeds the season tracker and links every report ever built, organised by type |
+| **Post-Match Report** | `build_report.py` | One played match: full team stats, set pieces, personnel, out-of-possession, a prose Performance Review, and (when real notes exist) a graded Coach's Brief |
+| **Pre-Match Analysis** | `build_prematch.py` | An upcoming opponent's recent form vs Orient's own, aggregated across each side's last N cached matches (or every match played this season) |
+| **Set Piece Report** | `build_corners.py` | Both sides' corners, plus the opponent's wide free kicks and near-box throw-ins — delivery by side, takers, first contact, defensive vulnerabilities, all as pitch diagrams and tables |
+| **Season Tracker** | `build_season.py` | `season-tracker.html` — league table, form, set-piece efficiency, minutes/workload, most-impactful and best individual performances, upcoming fixtures |
+| **Dashboard** | `webapp.py` + `templates/dashboard.html` | The hub everything else lives inside — embeds the season tracker, and the Pre-Match Analysis / Set Piece Analysis panes are generated live from whatever's actually been built, not hand-maintained |
 
 All of it runs from data pulled once per match and cached locally as
 parquet, so report builders work offline and can be re-run freely.
@@ -32,37 +34,46 @@ parquet, so report builders work offline and can be re-run freely.
 ```
 Impect API  →  fetch_data.pull_match()  →  DATA_ROOT/cache/<slug>_<matchId>/*.parquet
                                                      │
-                     ┌───────────────────────────────┼───────────────────────┐
-                     ▼                                ▼                       ▼
-              build_report.py                  build_prematch.py       build_season.py
-              (one played match)          + build_corners.py           (whole season log)
-                     │                          (N cached matches            │
-                     ▼                           per side)                   ▼
-   DATA_ROOT/reports/Post Match Report*.pdf         │        DATA_ROOT/reports/season-tracker.html
-                     │                               ▼                       │
-                     └──────────────► dashboard.html ◄─────────────────────┘
-                       DATA_ROOT/reports/{Pre-Match Analysis,Corner Report}*.pdf
+        ┌───────────────────────┬────────────────────┼──────────────────────┐
+        ▼                       ▼                     ▼                      ▼
+ build_report.py        build_prematch.py      build_season.py        webapp.py
+ (one played match,     + build_corners.py     (whole season log)     (Flask app -
+  via run.py)           (N cached matches,                             the dashboard,
+        │                each side)                   │                /brief, /selector)
+        ▼                       │                      ▼                      │
+ Post Match Report*.pdf         ▼        DATA_ROOT/reports/season-tracker.html │
+        │          Pre-Match Analysis*.pdf /                │                 │
+        │          Set Piece Report*.pdf                    │                 │
+        └──────────────────────┬───────────────────────────┴─────────────────┘
+                                ▼
+                    templates/dashboard.html
+                    (served at "/" by webapp.py)
 ```
 
-- `run.py` is the routine entry point for **post-match** reports: it checks
-  every configured Impect iteration, works out which of the club's own
-  matches are new or have been revised, pulls only those, and rebuilds.
-- **Pre-match and corner reports** are opponent-form pieces, not tied to one
-  of Orient's own matches — they're built by pointing `build_prematch.py` /
-  `build_corners.py` at a comma-separated list of single-match caches per
-  side (see *Running it* below), and re-added to `dashboard.html` by hand.
-- `manual_corrections.py` holds video-verified overrides to Impect's own
-  event tagging (e.g. a penalty Impect miscategorised under a throw-in
-  phase) — applied automatically wherever set-piece figures are computed,
-  so a correction can't be right on one page and wrong on another.
+- **`run.py`** is the routine entry point for **post-match** reports: it
+  checks every configured Impect iteration, works out which of the club's
+  own matches are new or have been revised, pulls only those, and
+  rebuilds.
+- **`build_upcoming.py`** is the mirror image: it finds whatever fixture is
+  next and, the first time nothing exists for it yet, auto-builds a
+  Pre-Match Analysis + Set Piece Report from every game each side has
+  played this season. Once anything exists for that fixture — its own
+  first pass, or a coach's assistant picking a specific sample through
+  `/selector` — it's left alone; a deliberate choice always sticks until
+  the fixture is played and a new one becomes next.
+- **`scheduler.py`** runs both of the above twice a week (Monday and
+  Thursday) inside its own long-lived container — see *Deployment* below.
+  Nobody needs to trigger a pull by hand.
+- **`manual_corrections.py`** holds video-verified overrides to Impect's
+  own event tagging (e.g. a penalty Impect miscategorised under a
+  throw-in phase) — applied automatically wherever set-piece figures are
+  computed, so a correction can't be right on one page and wrong on
+  another.
 - **`DATA_ROOT`** (see `envconfig.py`) is where all of that actually gets
-  written — `cache/` for pulled parquet, `reports/` for every generated PDF
-  and HTML page. It defaults to the project directory (today's behaviour,
-  unchanged), and becomes the mounted Docker volume once deployed (see
-  *Deployment* below). `dashboard.html` is the one exception: it's
-  hand-maintained, lives at the repo root regardless of `DATA_ROOT`, and
-  just links into `reports/...` — which is why that folder has to sit next
-  to it, in Docker as much as locally.
+  written — `cache/` for pulled parquet, `reports/` for every generated
+  PDF and HTML page. It defaults to the project directory locally, and
+  becomes the mounted Docker volume once deployed (see *Deployment*
+  below).
 
 ## Setup (once)
 
@@ -72,116 +83,128 @@ chmod 600 .env
 # edit .env and put your Impect username and password in it
 ```
 
-`.env` holds **only** the credentials and is gitignored — it must never be
-committed, emailed, or pasted into a chat window. Match settings live
-separately in `match.toml`, which contains no secrets and is safe to share.
+`.env` holds credentials and is gitignored — it must never be committed,
+emailed, or pasted into a chat window. Match settings live separately in
+`match.toml`, which contains no secrets and is safe to share.
 
 Resolution order for every setting is **real environment variable → file →
 default**, so a one-off override never requires editing anything.
 
-### Optional: Postgres for the processed-matches ledger
+### Optional: Postgres for shared state
 
-`state/processed.json` (which matches have been built, and Impect's
-`lastCalculationDate` for each — how `run.py` knows what's new or revised)
-is the one piece of local state genuinely worth a database instead of a
-file, ahead of deploying this alongside the recruiting platform on the same
-droplet. It's optional and off by default — nothing else here needs it.
+`state/processed.json` (which matches have been built), the Coach's
+Brief's saved checks, and which upcoming fixtures already have a Pre-Match/
+Set Piece Report all live in Postgres once `DATABASE_URL` is set — the
+single source of truth once this runs as more than one process (the
+scheduler and the web dashboard, for a start). Unset it and everything
+falls back to local JSON files, which is fine for solo local testing but
+not for deployment.
 
 ```bash
-docker compose up -d                    # starts a local Postgres
-cp .env.example .env                    # if you haven't already
+docker compose up -d postgres            # starts a local Postgres
+cp .env.example .env                     # if you haven't already
 # edit .env: DATABASE_URL=postgresql://match_analysis:devpassword@localhost:5432/match_analysis
-python3 migrate_state_to_db.py          # one-off: carries over existing history
-python3 run.py --dry-run                # now reading from Postgres instead
+python3 migrate_state_to_db.py           # one-off: carries over existing history
+python3 run.py --dry-run                 # now reading from Postgres instead
 ```
-
-Unset `DATABASE_URL` (or leave it out of `.env` entirely) and everything
-goes straight back to `state/processed.json` on local disk — `db.py`'s
-`available()` check is the only thing that branches, so this is a strict
-opt-in, not a new hard dependency. `build_season.py` picks up the same
-backend automatically, since it imports `load_state` from `run.py` rather
-than reading the file itself.
 
 The cached parquet files and generated PDFs/HTML are **not** going into
 Postgres — they're large, columnar, and a poor fit for relational storage.
-Containerised, they're the part that lives on a Docker volume (matching how
-the recruiting platform already stores its own files on the droplet), not
-the database — see *Deployment* below.
+They live on a Docker volume instead (matching how the recruiting platform
+already stores its own files on the shared droplet).
 
 ## Running it
 
-### Post-match reports — one command
+### The dashboard (how this is actually meant to be used)
 
 ```bash
-python3 run.py
+python3 webapp.py        # http://localhost:5050
 ```
 
-Run it whenever you know data has landed. **Nothing runs on a timer.** It
-checks every configured iteration across both accounts, works out what is
-new or has been revised, pulls only that, rebuilds the report, and
-regenerates `season-tracker.html`.
+Everything lives at one URL. The sidebar switches between:
+
+- **Season Progress** — the live season tracker.
+- **Pre-Match Analysis** / **Set Piece Analysis** — every report that
+  exists, captioned with its sample and whether it was built automatically
+  or picked by hand; click straight through to the PDF.
+- **Post-Match Reports** — still hand-maintained; add a finished report's
+  card by editing `templates/dashboard.html` directly.
+- **Coach's Brief** (`/brief`) — pick a match, paste the coach's notes in
+  plain English, see the plain-English readback, confirm, and the match's
+  Post-Match Report rebuilds itself with the graded Brief page included.
+  No CLI, no editing `match.toml`.
+- **Pre-Match Selector** (`/selector`) — pick an opponent from a dropdown
+  (populated from the live fixture list, so there's no guessing Impect's
+  exact spelling of a club name), describe a sample in free text ("last 10
+  games each team", "last 5 cup games each team"), confirm the readback,
+  and both the Pre-Match Analysis and Set Piece Report build immediately —
+  the second report always shares the first one's sample, since
+  `build_corners.py` reads its cache lists straight from
+  `build_prematch.py`.
+
+Both free-text steps (`/brief` and `/selector`) go through Claude via
+`brief_interpreter.py` / `selector_interpreter.py`, but the model never
+computes anything itself — it only *selects and parameterises* entries
+from a fixed, pre-verified catalog (`metric_catalog.py` for the Brief,
+`match_selector.py` for sample specs). The confirm/readback step exists so
+a misread never reaches a report un-checked.
+
+### Automatic data collection
+
+Deployed, `scheduler.py` runs inside its own container (`docker compose up
+-d scheduler`) and triggers `run.py` + `build_upcoming.py` every Monday
+and Thursday — no laptop needs to be awake, nothing needs a human to
+trigger it. Locally, run either script directly whenever you want to pull
+by hand:
 
 ```bash
+python3 run.py                 # post-match: new/revised matches only
 python3 run.py --dry-run       # decide and print, touch nothing
 python3 run.py --list          # every fixture the accounts can see
 python3 run.py --match 285457  # one specific match
 python3 run.py --force         # rebuild even if nothing changed
+
+python3 build_upcoming.py      # pre-match + set piece, for whatever's next
 ```
 
-Everything on the cover — opponent, competition, round, venue, date,
-colour — is **derived from the match record**, so `match.toml` needs no
-editing between fixtures. Impect labels rounds in German (`1. Runde`,
+Everything on a post-match cover — opponent, competition, round, venue,
+date, colour — is **derived from the match record**, so `match.toml` needs
+no editing between fixtures. Impect labels rounds in German (`1. Runde`,
 `12. Spieltag`); those are translated automatically.
 
 #### Why it re-checks matches it has already built
 
 Impect **revises** data after first publication — there is a verification
 pass that moves the packing numbers by roughly a fifth, and recalculations
-have been observed up to a week after kick-off. `state/processed.json`
-records each match's `lastCalculationDate`, and a report is rebuilt whenever
-that moves. A report is therefore never left carrying pre-verification
-figures.
+have been observed up to a week after kick-off. The processed-matches
+ledger records each match's `lastCalculationDate`, and a report is
+rebuilt whenever that moves. A report is therefore never left carrying
+pre-verification figures.
 
-#### When to run it
+#### When to expect data
 
 Measured on the current season, from kick-off to data landing: **nothing
 before ~12 hours**, median **18 hours**, **81% within 24h**, **97% within
-48h**. A Saturday afternoon kick-off is typically ready by Sunday morning.
-There is no point checking the same evening.
-
-### Pre-match analysis and corner reports
-
-These aren't tied to one of Orient's own matches, so they aren't part of
-`run.py`'s loop. Pull each side's recent matches individually, then point
-the builder at the cache list:
-
-```bash
-# pull however many recent matches you want per side (fetch_data.pull_match,
-# or fetch_data.py --match <id> for a one-off)
-
-PRE_OPP="Wycombe Wanderers" \
-PRE_OPP_CACHES="data_wycombe_1,data_wycombe_2,data_wycombe_3,data_wycombe_4,data_wycombe_5" \
-PRE_OUR_CACHES="data_swfc,data_wigan,data_barnsley,data_bromley,data_luton" \
-PRE_OUR_COMP="League One" \
-PRE_FIXTURE="League One - Brisbane Road - Saturday 12 September 2026" \
-python3 build_prematch.py
-
-# same env vars, same cache lists - build_corners.py reads them from
-# build_prematch.py directly, so both reports stay in sync automatically
-python3 build_corners.py
-```
-
-Sample size isn't fixed — Walsall's brief used their last 2 League Two
-games; Wycombe's used 5 League One games each side. Every match-count
-caption on the page is computed from the actual cache list, not assumed.
+48h** — though a specific match has been seen taking a full week. A
+Saturday afternoon kick-off is typically ready by Sunday morning; the
+scheduler just keeps checking until it is.
 
 ### Lower-level tools
+
+For a one-off build without going through the web UI:
 
 ```bash
 python3 fetch_data.py --list-matches      # fixtures + ids
 python3 fetch_data.py --match 285457      # pull one match + season context
 python3 build_report.py                   # build from whatever is in the cache
 python3 build_review.py                   # 4-page excerpt: only what changed vs the last build
+
+PRE_OPP="Wycombe Wanderers" \
+PRE_OPP_CACHES="data_wycombe_1,data_wycombe_2,data_wycombe_3" \
+PRE_OUR_CACHES="data_swfc,data_wigan,data_barnsley" \
+PRE_FIXTURE="League One · Brisbane Road · Saturday 12 September 2026" \
+python3 build_prematch.py
+python3 build_corners.py    # same env vars - reads OPP_CACHES/OUR_CACHES from build_prematch.py
 ```
 
 Credentials are read from `.env` by the scripts themselves and are never
@@ -200,32 +223,24 @@ setting cannot silently overwrite a different fixture's report.
 
 ### Deployment: Docker
 
-The image is the pipeline, not a web server — there isn't one yet, so the
-files this produces are opened directly (or served some other way) until
-that's built. Deployed, it's invoked on demand rather than left running,
-matching how `run.py` already describes its own usage.
-
 ```bash
 docker compose build app
 docker compose up -d postgres
 docker compose run --rm app python3 run.py --dry-run
 docker compose run --rm app python3 run.py
+docker compose up -d scheduler    # automated Mon/Thu pulls, persistent
 ```
 
-`app` writes to `APP_DATA_DIR` (`/data` in the container, see
-`envconfig.py`), which is the named `appdata` volume in
+`app`/`scheduler`/`webapp` all write to `APP_DATA_DIR` (`/data` in the
+container, see `envconfig.py`), which is the named `appdata` volume in
 `docker-compose.yml` locally, and will be whatever's mounted at that path
 on the droplet — the code never knows the difference. `.env` is passed in
 via `env_file`, never baked into the image (see `.dockerignore`).
 
-Tested end-to-end locally: built the image, pulled a real match through the
-containerised pipeline against the compose Postgres, and confirmed the
-parquet cache, the PDF, and the state row all landed on the volume/database
-rather than local disk.
-
-Not yet built: the serving layer (something to actually host `reports/` and
-gate it behind a login) and the sign-in page itself — see the project's own
-notes on that; it's a deliberately separate decision from this piece.
+Tested end-to-end locally: built the image, pulled a real match through
+the containerised pipeline against the compose Postgres, and confirmed
+the parquet cache, the PDF, and the state row all landed on the
+volume/database rather than local disk.
 
 ### Licences
 
@@ -241,23 +256,31 @@ rather than failing.
 | File | Role |
 |---|---|
 | `run.py` | Routine entry point — pulls new/revised matches, rebuilds post-match reports, regenerates the season tracker |
+| `build_upcoming.py` | The pre-match mirror of `run.py` — builds Pre-Match Analysis + Set Piece Report for whatever's next, once, never overwriting a deliberate `/selector` choice |
+| `scheduler.py` | Long-lived container process — triggers `run.py` + `build_upcoming.py` every Monday and Thursday |
 | `fetch_data.py` | Impect API pull for one match (`pull_match`, shared by `run.py` and the CLI) |
-| `build_report.py` | Assembles a post-match report: match stats, set pieces, personnel, out-of-possession, Performance Review, Coach's Brief |
-| `build_prematch.py` | Opponent-form pre-match report, aggregated across N cached matches per side |
-| `build_corners.py` | Corner-routine report for the same fixture as a pre-match build, sharing its cache config |
+| `build_report.py` | Assembles a post-match report: match stats, set pieces, personnel, out-of-possession, prose Performance Review, Coach's Brief |
+| `build_prematch.py` | Opponent-form pre-match report, aggregated across N cached matches per side (or every match this season) |
+| `build_corners.py` | Set-piece report for the same fixture as a pre-match build, sharing its cache config — corners, wide free kicks, near-box throw-ins |
 | `build_season.py` | Rebuilds `season-tracker.html` from the live match list plus whatever post-match caches exist |
 | `build_review.py` | Short excerpt PDF of only the pages that changed since the last build — nothing recomputed, pages are lifted from the full report |
-| `coach_brief.py` | Grades one match against the coaching staff's real pre-match instructions — see below |
+| `webapp.py` | The Flask app — serves the dashboard, `/brief`, `/selector`, and every generated report |
+| `match_selector.py` | Turns a `{team, count, competition}` spec into real cache directories against the live fixture list; also owns the `prematch_builds` auto/manual tracking table |
+| `match_lookup.py` | Shared opponent/date lookup from the processed-matches ledger, used by both the CLI and the web UI |
+| `brief_interpreter.py` | Free-text Coach's Brief notes → structured checks, via Claude — selects from `metric_catalog.py`, never computes anything itself |
+| `selector_interpreter.py` | Free-text sample description → `match_selector.py` specs, via Claude |
+| `metric_catalog.py` | The fixed, pre-verified catalog of Coach's Brief metrics a check can be built from |
+| `coach_brief_engine.py` | Grades one match's Postgres-saved checks against that match's real data |
 | `manual_corrections.py` | Video-verified overrides to Impect's own event tagging, applied everywhere set-piece figures are computed |
-| `report_config.py` | Match identity, palette, page geometry, pitch drawing, shared thresholds |
+| `report_config.py` | Match identity, palette, page geometry, pitch drawing, shared table renderers (`stat_table`/`player_table`), shared thresholds |
 | `report_metrics.py` | Every metric definition (the auditable layer) |
 | `report_pages.py` | One renderer per post-match report page |
 | `envconfig.py` | Settings resolution: env var → `match.toml` → default; also defines `DATA_ROOT`/`CACHE_ROOT`/`REPORTS_ROOT` |
-| `db.py` | Optional Postgres backend for the processed-matches ledger — see *Setup* above |
+| `db.py` | Postgres backend for the processed-matches ledger, Coach's Brief checks, and the pre-match build tracking table |
 | `migrate_state_to_db.py` | One-off: imports `state/processed.json` into Postgres |
-| `Dockerfile` | Builds the pipeline (not a server yet) into an image — see *Deployment* |
-| `docker-compose.yml` | Local Postgres + the app image, for testing before deployment |
-| `dashboard.html` | Hand-maintained hub — embeds the season tracker, links every report ever built |
+| `templates/` | Jinja templates for every web page, including `dashboard.html` |
+| `Dockerfile` | Builds the pipeline + web app into one image, used three ways — see *Deployment* |
+| `docker-compose.yml` | Postgres + the app/scheduler/webapp services |
 | `cache/`, `reports/` | Generated — pulled parquet and every built PDF/HTML respectively, under `DATA_ROOT` |
 | `test_*_golden.py` | Regression tests pinned to already-verified reports — see *Testing* below |
 
@@ -296,24 +319,21 @@ A side can be fully compliant and still lose. Judging only on outcome bins
 a good plan after one bad afternoon; judging only on compliance keeps a
 plan that isn't working.
 
-**`coach_brief.py` holds one match's config at a time.** It's rewritten for
-whichever match currently has real dictated notes, and `build_report.py`
-grades whatever match it's pointed at against whatever `coach_brief.py`
-currently holds — so a rebuild of a *different* match must either pass
-`PMR_SKIP_COACH_BRIEF=1` (no real notes exist for it) or have that match's
-own brief reconstructed first. Once a match's real Brief has been
-overwritten by a later one, it can only be recovered by reading the
-instruction wording back off the already-shipped PDF page and
-re-verifying every figure against the match's own data — never by copying
-the old numbers, since a data revision or bug fix may have changed them.
+A check is built from a coach's free-text notes (`/brief` in the
+dashboard, or `brief_interpreter.py` directly), which the model maps onto
+one of a fixed set of pre-verified computations in `metric_catalog.py` — it
+never invents a new one. Every match's checks are saved to Postgres
+(`coach_brief_checks`) independently of every other match's, so rebuilding
+one match's report never risks overwriting another's notes, and a brief
+can always be edited and re-saved from its own original wording.
 
-Each check grades on one of three bases, set in `TARGETS` at the top of the
-file:
+Each check grades on one of three bases:
 
 | basis | meaning |
 |---|---|
 | `beat_opponent` | compare against the opposition in the same match — needs no historical data, so it survives squad turnover |
 | `absolute` | compare against a fixed threshold |
+| `vs_baseline` | compare against the team's own previous match(es) |
 | `info` | report the value, no pass/fail — used when no defensible threshold exists (e.g. a named opponent player who didn't feature) |
 
 Thresholds are **provisional by default and the page says so**. Replace
@@ -324,6 +344,13 @@ after seeing the result are marking your own homework.
 judge the same metric, both read one constant from `report_config.py`
 (`SETPIECE_XG_CONCEDED_CONCERN` and friends) so the two pages cannot reach
 opposite verdicts on the same number.
+
+**Known gap:** the free-text interpretation layer matches player names as
+written in the coach's notes against Impect's own squad list by simple
+string matching — a nickname, misspelling, or unusual transliteration can
+fail to resolve. The confirm/readback step surfaces this before anything
+is saved, but it's worth knowing about rather than assuming every name
+will just work.
 
 ## Data traps worth knowing
 
@@ -369,7 +396,15 @@ against.
    `setPieceId` can go stale if the match is later revised and Impect
    re-numbers the event — the exclusion then silently stops matching and
    needs re-pointing at the new id.
-8. **Per-90 extrapolation.** Deliberately not used on single-match player
+8. **Zone tags vs raw coordinates can disagree.** A set-piece delivery's
+   categorical end-zone tag (e.g. `FAR_POST_WIDE`) and the real x/y
+   coordinate of who touched it first are two separate fields in Impect's
+   data, and they don't always agree — seen directly on a real corner
+   where the zone tag said far post but the coordinate placed the touch
+   centrally. Diagrams in this project always plot the real coordinate,
+   not the tag, so a diagram can be correct even when the tag it's next to
+   looks inconsistent with it.
+9. **Per-90 extrapolation.** Deliberately not used on single-match player
    pages. Extrapolating one match ×8 produces confident nonsense (an
    11-minute cameo with 4 recoveries becomes 32.7-per-90 and tops a chart
    whose real leader made 22 in 95 minutes). Per-90 belongs in season
