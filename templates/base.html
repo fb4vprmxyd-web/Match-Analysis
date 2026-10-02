@@ -102,26 +102,15 @@
   }
   .readback-line:last-child { border-bottom: none; }
   form { margin: 0; }
-  header nav { margin-top: 10px; }
-  header nav a {
-    color: var(--muted);
-    text-decoration: none;
-    font-size: 13.5px;
-    font-weight: 600;
-    margin-right: 20px;
-  }
-  header nav a.active { color: var(--ink); }
 </style>
 </head>
 <body>
-<header>
-  <p class="kicker">Leyton Orient</p>
-  <p class="title"><a href="/" style="color:inherit;text-decoration:none;">Match Analysis</a></p>
-  <nav>
-    <a href="/" class="{{ 'active' if request.path == '/' or request.path.startswith('/brief') else '' }}">Coach's Brief</a>
-    <a href="/selector" class="{{ 'active' if request.path.startswith('/selector') else '' }}">Pre-Match Selector</a>
-  </nav>
-</header>
+<!-- No header/nav here on purpose: these pages are normally viewed inside
+     dashboard.html's iframe panes, whose sidebar already gives full
+     navigation context - a second nav bar inside the iframe would just be
+     redundant chrome. Each page still sets its own <title> block for the
+     case where it's opened directly (a shared link), and the content
+     itself (opponent name, match id) establishes context on its own. -->
 <main>
 {% block content %}{% endblock %}
 </main>

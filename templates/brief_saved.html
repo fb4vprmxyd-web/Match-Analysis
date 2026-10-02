@@ -1,11 +1,20 @@
 {% extends "base.html" %}
 {% block title %}Coach's Brief — {{ opponent }}{% endblock %}
 {% block content %}
-<p class="muted"><a href="/">&larr; all matches</a></p>
+<p class="muted"><a href="/brief">&larr; all matches</a></p>
 <div class="panel">
   <p style="margin-top:0;"><strong>Saved.</strong></p>
-  <p class="muted">{{ count }} check(s) saved for match {{ match_id }} ({{ opponent }}).
-  They'll be used the next time this match's post-match report is built.</p>
-  <a class="btn" href="/brief/{{ match_id }}">Edit again</a>
+  <p class="muted">{{ count }} check(s) saved for match {{ match_id }} ({{ opponent }}).</p>
+
+  {% if report_url %}
+  <p class="muted">The report has been rebuilt with this brief.</p>
+  <a class="btn" href="{{ report_url }}" target="_blank">Open report</a>
+  {% elif build_error %}
+  <p style="color: var(--bad); margin-bottom:4px;"><strong>Saved, but the report
+  couldn't be rebuilt automatically.</strong></p>
+  <p class="muted" style="white-space: pre-wrap;">{{ build_error }}</p>
+  {% endif %}
+
+  <a class="btn" href="/brief/{{ match_id }}" style="background:transparent;border:1px solid var(--grid); margin-left:8px;">Edit again</a>
 </div>
 {% endblock %}

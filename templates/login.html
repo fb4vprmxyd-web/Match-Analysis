@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block title %}Sign in — Leyton Orient{% endblock %}
+{% block content %}
+<div class="panel" style="max-width:360px; margin:80px auto 0;">
+  <p style="margin-top:0;"><strong>Leyton Orient — Match Analysis</strong></p>
+  <form method="post">
+    <input type="hidden" name="next" value="{{ next or '' }}">
+    <label class="muted" style="display:block; margin-bottom:6px;">Username</label>
+    <input type="text" name="username" autofocus autocomplete="username"
+          style="width:100%; margin-bottom:16px; background:var(--sidebar); color:var(--ink);
+                 border:1px solid var(--grid); border-radius:8px; padding:10px 12px;
+                 font-family:inherit; font-size:14px;">
+    <label class="muted" style="display:block; margin-bottom:6px;">Password</label>
+    <input type="password" name="password" autocomplete="current-password"
+          style="width:100%; margin-bottom:16px; background:var(--sidebar); color:var(--ink);
+                 border:1px solid var(--grid); border-radius:8px; padding:10px 12px;
+                 font-family:inherit; font-size:14px;">
+    {% if error %}
+    <p style="color: var(--bad); margin-bottom:16px;">{{ error }}</p>
+    {% endif %}
+    <button type="submit" style="width:100%;">Sign in</button>
+  </form>
+</div>
+{% endblock %}

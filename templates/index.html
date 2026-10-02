@@ -19,7 +19,11 @@
       <tr>
         <td>{{ m.id }}</td>
         <td>{{ m.opponent }}</td>
-        <td class="muted">{{ m.output }}</td>
+        <td class="muted">
+          {% if m.output %}
+            <a href="/reports/{{ m.output }}" target="_blank">{{ m.output }}</a>
+          {% endif %}
+        </td>
         <td>
           {% if m.has_brief %}
             <span class="badge yes">Saved</span>

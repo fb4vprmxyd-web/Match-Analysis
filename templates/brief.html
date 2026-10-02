@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}Coach's Brief — {{ opponent }}{% endblock %}
 {% block content %}
-<p class="muted"><a href="/">&larr; all matches</a></p>
+<p class="muted"><a href="/brief">&larr; all matches</a></p>
 <div class="panel">
   <p class="muted" style="margin-top:0;">Match {{ match_id }} · {{ opponent }}</p>
   <form method="post" action="/brief/{{ match_id }}/interpret">

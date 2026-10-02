@@ -1,10 +1,13 @@
-# Runs the pipeline (run.py, build_*.py) - not a web server. There isn't
-# one yet; the dashboard/report files this produces are served some other
-# way for now (see README). This image just does the pull-and-build work
-# and writes its output onto whatever's mounted at APP_DATA_DIR, so it's
-# invoked on demand (`docker compose run app python3 run.py`), not left
-# running - matching how run.py already describes its own usage: "run it
-# whenever you know data has landed, nothing runs on a timer."
+# One image, three uses in docker-compose.yml - all write to whatever's
+# mounted at APP_DATA_DIR, none of them know whether that's a local volume
+# or the droplet's real storage:
+#   - `app`:       one-shot/manual (`docker compose run --rm app python3 run.py`)
+#   - `scheduler`: this CMD overridden to scheduler.py, left running
+#                  (restart: unless-stopped) so the Mon/Thu pulls happen
+#                  on their own once deployed - see scheduler.py.
+#   - `webapp`:    this CMD overridden to gunicorn, left running and
+#                  exposed - the actual dashboard a coach's assistant signs
+#                  into. See webapp.py and auth.py.
 
 FROM python:3.12-slim
 

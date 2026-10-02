@@ -1,18 +1,31 @@
 # Local stack: Postgres for the processed-matches ledger (db.py) and the
-# app image itself, writing to a named volume instead of local disk - the
-# same shape production will have on the droplet, just with a plain local
-# volume standing in for whatever's actually mounted there.
+# Coach's Brief/auth data, the app image for one-shot/manual runs,
+# `scheduler` for the automated data pull, and `webapp` for the actual
+# dashboard - writing to a named volume instead of local disk, the same
+# shape production will have on the droplet, just with a plain local volume
+# standing in for whatever's actually mounted there.
 #
 #   docker compose up -d postgres        # just the database
 #   docker compose build app             # build the app image
 #   docker compose run --rm app python3 run.py --dry-run
 #   docker compose run --rm app python3 run.py
+#   docker compose up -d scheduler       # automated Mon/Thu pulls, persistent
+#   docker compose up -d webapp          # the dashboard, on :5050
 #   docker compose down                  # stop (data survives - see volumes)
 #   docker compose down -v               # stop AND wipe all data - careful
 #
 # `app` has no `ports` and isn't meant for `docker compose up -d app` - it's
-# a one-shot pipeline run (see Dockerfile), not a server, until the serving
-# layer exists.
+# a one-shot pipeline run (see Dockerfile) for a manual/on-demand build.
+# `scheduler` and `webapp` are the opposite: built from the same image, but
+# left running (restart: unless-stopped) - `scheduler` so the Mon/Thu pulls
+# happen on their own once deployed (see scheduler.py), `webapp` because
+# it's the actual site someone signs into.
+#
+# PRODUCTION: the ${POSTGRES_PASSWORD:-devpassword} / DATABASE_URL defaults
+# below are for local testing ONLY. Set real values for both in the
+# droplet's own .env before deploying there - see .env.example. Likewise
+# AUTH_USERS/FLASK_SECRET_KEY for `webapp` (see auth.py): leaving either
+# unset means nobody can sign in, or everyone gets logged out at random.
 
 services:
   postgres:
@@ -37,12 +50,71 @@ services:
     env_file:
       - .env
     environment:
-      DATABASE_URL: ${DATABASE_URL:-postgresql://match_analysis:devpassword@postgres:5432/match_analysis}
+      # Hardcoded to the `postgres` service hostname, not a
+      # ${DATABASE_URL:-default} fallback - .env's own DATABASE_URL (set
+      # for non-Docker local testing, pointing at localhost via the port
+      # mapping below) is not a fallback-worthy empty value from Compose's
+      # point of view, so that pattern silently fed the wrong hostname
+      # into every container instead of ever hitting its own default.
+      # `environment:` here overrides whatever env_file also injects for
+      # the same name, which is what actually makes this win.
+      DATABASE_URL: postgresql://match_analysis:${POSTGRES_PASSWORD:-devpassword}@postgres:5432/match_analysis
     depends_on:
       postgres:
         condition: service_healthy
     volumes:
       - appdata:/data
+
+  scheduler:
+    build: .
+    env_file:
+      - .env
+    environment:
+      # Hardcoded to the `postgres` service hostname, not a
+      # ${DATABASE_URL:-default} fallback - .env's own DATABASE_URL (set
+      # for non-Docker local testing, pointing at localhost via the port
+      # mapping below) is not a fallback-worthy empty value from Compose's
+      # point of view, so that pattern silently fed the wrong hostname
+      # into every container instead of ever hitting its own default.
+      # `environment:` here overrides whatever env_file also injects for
+      # the same name, which is what actually makes this win.
+      DATABASE_URL: postgresql://match_analysis:${POSTGRES_PASSWORD:-devpassword}@postgres:5432/match_analysis
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - appdata:/data
+    command: ["python3", "scheduler.py"]
+    restart: unless-stopped
+
+  webapp:
+    build: .
+    env_file:
+      - .env
+    environment:
+      # Hardcoded to the `postgres` service hostname, not a
+      # ${DATABASE_URL:-default} fallback - .env's own DATABASE_URL (set
+      # for non-Docker local testing, pointing at localhost via the port
+      # mapping below) is not a fallback-worthy empty value from Compose's
+      # point of view, so that pattern silently fed the wrong hostname
+      # into every container instead of ever hitting its own default.
+      # `environment:` here overrides whatever env_file also injects for
+      # the same name, which is what actually makes this win.
+      DATABASE_URL: postgresql://match_analysis:${POSTGRES_PASSWORD:-devpassword}@postgres:5432/match_analysis
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - appdata:/data
+    ports:
+      - "5050:5050"
+    # --bind 0.0.0.0: the gunicorn process itself has to listen on every
+    # interface inside the container, not just loopback, or the `ports`
+    # mapping above has nothing to forward to - a container's loopback
+    # isn't reachable from the host the way a plain localhost process is.
+    command: ["gunicorn", "--bind", "0.0.0.0:5050", "--workers", "3",
+              "--access-logfile", "-", "webapp:app"]
+    restart: unless-stopped
 
 volumes:
   pgdata:

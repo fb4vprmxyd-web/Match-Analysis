@@ -8,3 +8,4 @@ psycopg2-binary
 pyarrow
 anthropic
 flask
+gunicorn
