@@ -166,13 +166,17 @@ def league_table(div_matches, team):
 
 
 PERCENTILE_METRICS = [
-    # column, label, higher-is-better, display format
-    ("RATIO_BALL_POSSESSION", "Possession", True, "{:.0%}"),
-    ("FIELD_TILT", "Field Tilt", True, "{:.0%}"),
-    ("MEAN_PRESSURE_HEIGHT", "Press Height", True, "{:.1f}m"),
-    ("PPDA", "Pressing Intensity", False, "{:.1f} PPDA"),
-    ("PXT_POSITIVE", "Attacking Threat (xT)", True, "{:.2f}"),
-    ("RATIO_PASSING_ACCURACY", "Passing Accuracy", True, "{:.0%}"),
+    # column, label, higher-is-better, display format, source endpoint
+    ("RATIO_BALL_POSSESSION", "Possession", True, "{:.0%}", "scores"),
+    ("FIELD_TILT", "Field Tilt", True, "{:.0%}", "scores"),
+    ("MEAN_PRESSURE_HEIGHT", "Press Height", True, "{:.1f}m", "scores"),
+    ("PPDA", "Pressing Intensity", False, "{:.1f} PPDA", "scores"),
+    ("PXT_POSITIVE", "Attacking Threat (xT)", True, "{:.2f}", "scores"),
+    ("RATIO_PASSING_ACCURACY", "Passing Accuracy", True, "{:.0%}", "scores"),
+    # Not in getSquadMatchScores - shots live in the matchsums endpoint
+    # instead (see fetch_data.py's ss.parquet pull), so this needs its own
+    # fetch rather than riding along with the metrics above.
+    ("SHOT_AT_GOAL_NUMBER", "Shots", True, "{:.1f}", "matchsums"),
 ]
 
 
@@ -185,17 +189,30 @@ def league_percentiles(api, div_matches, team):
     if api is None or not len(div_matches):
         return []
     ids = [int(i) for i in div_matches.id.tolist()]
-    try:
-        sc = api.getSquadMatchScores(matches=ids)
-    except Exception:
-        return []
 
-    cols = [c for c, *_ in PERCENTILE_METRICS]
-    agg = sc.groupby("squadName")[cols].mean()
+    # Group metrics by which endpoint they come from, so each endpoint is
+    # fetched once regardless of how many metrics it covers.
+    by_source = {}
+    for col, _, _, _, source in PERCENTILE_METRICS:
+        by_source.setdefault(source, []).append(col)
+    fetchers = {"scores": api.getSquadMatchScores, "matchsums": api.getSquadMatchsums}
+
+    agg = {}
+    for source, cols in by_source.items():
+        try:
+            df = fetchers[source](matches=ids)
+        except Exception:
+            continue
+        present = [c for c in cols if c in df.columns]
+        if present:
+            agg[source] = df.groupby("squadName")[present].mean()
 
     rows = []
-    for col, label, higher_better, fmt in PERCENTILE_METRICS:
-        vals = agg[col].dropna()
+    for col, label, higher_better, fmt, source in PERCENTILE_METRICS:
+        a = agg.get(source)
+        if a is None or col not in a.columns:
+            continue
+        vals = a[col].dropna()
         if team not in vals.index or len(vals) < 2:
             continue
         us = vals[team]
