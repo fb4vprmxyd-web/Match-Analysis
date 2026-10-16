@@ -217,9 +217,19 @@ def _prematch_cards():
         text = c.get("fixture_text") or ""
         date_part = text.rsplit(" · ", 1)[-1] if text else ""
         try:
-            return (0, datetime.strptime(date_part, "%A %d %B %Y"))
+            d = datetime.strptime(date_part, "%A %d %B %Y")
         except ValueError:
             return (1, datetime.min)
+        # A scheduled date already in the past for a fixture Impect still
+        # treats as not-yet-played means the match was postponed and hasn't
+        # been rescheduled yet (confirmed on Mansfield Town: "25 September
+        # 2026" showing after that date had already passed) - the date
+        # string is stale, not actually "sooner than everything else." Goes
+        # in the same unknown bucket as a cup-only opponent with no fixture
+        # at all, rather than sorting as if it's the most urgent one.
+        if d.date() < datetime.now(timezone.utc).date():
+            return (1, datetime.min)
+        return (0, d)
 
     out.sort(key=_fixture_sort_key)
     return out
