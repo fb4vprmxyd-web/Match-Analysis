@@ -203,7 +203,25 @@ def _prematch_cards():
         c["corner_url"] = f"/reports/Set Piece Report - {opp}.pdf" if corner_path.exists() else None
         if c["prematch_url"] or c["corner_url"]:
             out.append(c)
+    # Soonest fixture first - what a coach's assistant actually wants from a
+    # pre-match list ("what's coming up next"), not build order. fixture_text
+    # ends in a date formatted "%A %-d %B %Y" (see match_selector._format_
+    # fixture) - parsed back out rather than stored separately, since the
+    # display string already has it. Stable-sorted by built_at first so
+    # undated cards (no scheduled rematch found, e.g. a cup-only opponent)
+    # still have a sensible order among themselves, pushed after every dated
+    # one rather than sorting as if their date were "now".
     out.sort(key=lambda c: c["built_at"], reverse=True)
+
+    def _fixture_sort_key(c):
+        text = c.get("fixture_text") or ""
+        date_part = text.rsplit(" · ", 1)[-1] if text else ""
+        try:
+            return (0, datetime.strptime(date_part, "%A %d %B %Y"))
+        except ValueError:
+            return (1, datetime.min)
+
+    out.sort(key=_fixture_sort_key)
     return out
 
 
