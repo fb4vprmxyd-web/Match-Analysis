@@ -47,7 +47,7 @@ import report_metrics as RM
 from report_config import (apply_style, BG, PANEL, INK, MUTED, GRID, GOOD, BAD,
                            BARC, TEAM_C, PAGE_W, PAGE_H, style_bar_axis, surname,
                            draw_pitch, contrast_ink, PITCH_X, PITCH_Y,
-                           stat_table, player_table)
+                           stat_table, player_table, line_pitch)
 from envconfig import CACHE_ROOT, REPORTS_ROOT
 
 
@@ -1225,9 +1225,10 @@ def _turnover_card(bwrd, bwrd_r):
         body = "About the same damage per loss as our own turnovers - not a distinguishing feature of their game."
     else:
         body = (f"Actually less damaging per loss than our own turnovers "
-                f"({bwrd:.1f} to {bwrd_r:.1f}) - this isn't where the game gets lost.")
+                f"({bwrd:.1f} to {bwrd_r:.1f} a game) - this isn't where "
+                f"the game gets lost.")
     return ("Their turnovers hurt", f"{bwrd:.1f}",
-           f"defenders removed by their ball wins (ours {bwrd_r:.1f})", body)
+           f"defenders removed by their ball wins a game (ours {bwrd_r:.1f})", body)
 
 
 def _top(p, mask, sort_col, ascending=False):
@@ -1259,11 +1260,26 @@ def _press_target(position):
 
 def page_plan(fig, f):
     # Replaces the old card-grid layout with a written summary - three
-    # paragraphs (style, strengths, weaknesses) instead of point cards. The
-    # underlying logic (every conditional wording branch - close-split
-    # qualifiers, the turnover ratio bands, the GK-press threshold, corner
-    # concentration, centre-forward aerial rate) is unchanged from the old
-    # card version; only how it's assembled into sentences is new.
+    # paragraphs (style, strengths, weaknesses) instead of point cards. Most
+    # of the underlying logic (close-split qualifiers, the turnover ratio
+    # bands, the GK-press threshold, corner concentration) is unchanged from
+    # the old card version; only how it's assembled into sentences is new.
+    # The centre-forward read is the one branch that's genuinely new logic,
+    # not just reworded - see the BPDR-per-90 comment below.
+    #
+    # Numbers on this page come from two genuinely different kinds of stat,
+    # and any new sentence has to say which: most team-level figures (xg,
+    # ppda, bwrd, fouls, xg_transition, ...) are a MEAN across the sample's
+    # matches (see facts()'s own docstring) and need "a game"/"on average"
+    # in the sentence, or a reader has no way to tell a per-match figure
+    # from a season total (confirmed confusing in practice - Blackpool's
+    # "0.45 xG" transition line read as a season total until this was
+    # added). Player-level figures from `p` (BPD, loss, BPDR, ...) are the
+    # opposite: a SUM across however many of the sample's matches that
+    # player featured in, so those need "across this sample" instead - also
+    # not safe to leave bare, just wrong in the other direction. Percentage
+    # shares (xG%, progression splits, press%) don't need either - a rate
+    # is already self-describing.
     title(fig, "THE PLAN", "how they set up, their threats, and where to hurt them")
     p = f["players"]
     if len(p) == 0:
@@ -1320,8 +1336,9 @@ def page_plan(fig, f):
         f"share, so our {cover_side}-sided pair will need real cover")
     strength_bits = [
         f"Transitions are their biggest weapon: {tr:.0f}% of their "
-        f"progression and {f['xg_transition']:.2f} xG comes from them alone, "
-        f"so careless turnovers in our own half are how this game gets lost.",
+        f"progression and {f['xg_transition']:.2f} xG a game comes from "
+        f"them alone, so careless turnovers in our own half are how this "
+        f"game gets lost.",
         f"The press is real - {ppda[0]:.1f} PPDA against our own "
         f"{ppda[1]:.1f}, hunting between the lines - so our 8s will need "
         f"one-touch options rather than time on the ball.",
@@ -1329,33 +1346,50 @@ def page_plan(fig, f):
         f"Their ball-winning matters just as much as their press: "
         f"{turnover_body[0].lower()}{turnover_body[1:]}",
         f"{surname(bannan.playerName)} is their pivot, with {bannan.BPD:.1f} "
-        f"bypassed defenders - the most on the pitch. Cutting the passing "
-        f"line into him is the clearest individual job in the game.",
+        f"bypassed defenders across this sample - the most on the pitch. "
+        f"Cutting the passing line into him is the clearest individual job "
+        f"in the game.",
     ]
     # PRESSURE_OPP_GK_PERCENT is how much THEY press an opposing keeper - only
     # worth mentioning when that's actually true. At 0% an unconditional line
     # here would say "they press the keeper" from a stat that says the
     # opposite.
+    # gk[0]/poss[0] are THEIR season-wide averages against whoever they've
+    # actually played so far (we're not in that sample yet - this fixture
+    # hasn't happened) - phrasing it as "pressed our goalkeeper" read as
+    # something already observed against us specifically, when it's really
+    # their general tendency against opposing keepers, projected onto us.
     GK_PRESS_THRESHOLD = 0.08
     if gk[0] >= GK_PRESS_THRESHOLD:
         if poss[0] < 0.48:
             strength_bits.append(
-                f"They had only {poss[0]*100:.0f}% of the ball and still "
-                f"pressed our goalkeeper - expect our goalkeeper and "
-                f"centre-backs to be hurried regardless of who has it.")
+                f"They had only {poss[0]*100:.0f}% of the ball across this "
+                f"sample but still pressed the opposition's goalkeeper - "
+                f"expect the same against us, with our goalkeeper and "
+                f"centre-backs hurried regardless of who has it.")
         else:
             strength_bits.append(
-                f"They press the keeper even with {poss[0]*100:.0f}% of the "
-                f"ball themselves - expect our goalkeeper and centre-backs "
-                f"to be hurried regardless.")
-    if cf is not None:
-        cf_total = cf.aw + cf.al
-        cf_rate = cf.aw / cf_total if cf_total else 0.5
-        if cf_rate >= 0.55:
+                f"They press the opposition's goalkeeper even with "
+                f"{poss[0]*100:.0f}% of the ball themselves - expect our "
+                f"goalkeeper and centre-backs to be hurried regardless.")
+    # Centre-forward profile: bypassed defenders received per 90, not aerial
+    # duel win-rate - most centre-forwards in this league lose more aerials
+    # than they win regardless of actual playing style (two centre-backs
+    # against one striker), so a win-rate threshold fired on nearly every
+    # opponent and said nothing distinctive. BPDR-as-receiver spreads far
+    # more meaningfully across real players (measured across every cached
+    # centre-forward this season: roughly 5 to 28 per 90, median ~15) and
+    # actually separates "gets found in behind the back line" from "comes
+    # short to feet" - the distinction this sentence is trying to make.
+    if cf is not None and cf.mins > 0:
+        cf_bpdr90 = cf.BPDR / cf.mins * 90
+        if cf_bpdr90 >= 18:
             strength_bits.append(
-                f"Their centre-forward {surname(cf.playerName)} wins most of "
-                f"what comes his way in the air ({int(cf.aw)} of "
-                f"{int(cf.aw + cf.al)}) - a genuine threat, not a soft touch.")
+                f"Their centre-forward {surname(cf.playerName)} averages "
+                f"{cf_bpdr90:.1f} bypassed defenders per 90 as a receiver - "
+                f"he prefers to run in behind the defence rather than drop "
+                f"deep for it, so our centre-backs need to watch the line "
+                f"rather than stepping up on him.")
     strength_para = " ".join(strength_bits)
 
     # -------------------------------------------------------- weaknesses
@@ -1381,17 +1415,18 @@ def page_plan(fig, f):
         f"Press their {_press_target(top_loser.position)} directly - "
         f"{surname(top_loser.playerName)} alone was responsible for "
         f"{top_loser.loss:.1f} teammates taken out of the game by his "
-        f"losses. The three costliest overall were {loser_names}.",
+        f"losses across this sample. The three costliest overall were "
+        f"{loser_names}.",
     ]
-    if cf is not None:
-        cf_total = cf.aw + cf.al
-        cf_rate = cf.aw / cf_total if cf_total else 0.5
-        if cf_rate <= 0.45:
+    if cf is not None and cf.mins > 0:
+        cf_bpdr90 = cf.BPDR / cf.mins * 90
+        if cf_bpdr90 <= 10:
             weak_bits.append(
-                f"Their centre-forward {surname(cf.playerName)} is a runner, "
-                f"not a target man ({int(cf.aw)} of {int(cf.aw + cf.al)} won "
-                f"in the air) - our centre-backs should back themselves and "
-                f"squeeze up.")
+                f"Their centre-forward {surname(cf.playerName)} averages "
+                f"just {cf_bpdr90:.1f} bypassed defenders per 90 as a "
+                f"receiver - he likes dropping deep to come to the ball "
+                f"rather than running in behind, so our centre-backs can "
+                f"squeeze up without much fear of being played through.")
     if f["corners"] == 0 or f["corner_xg"] <= 0:
         weak_bits.append(
             f"They offer nothing from dead balls ({f['corners']} corners, "
@@ -1418,40 +1453,59 @@ def page_plan(fig, f):
         ("STRENGTHS — WHAT TO BE READY FOR", BAD, strength_para),
         ("WEAKNESSES — WHERE TO ATTACK THEM", GOOD, weak_para),
     ]
-    # matplotlib's text line height is fontsize * linespacing, in points -
-    # converting that to a figure-fraction-per-line step (rather than a
-    # guessed constant) is what keeps the gap between sections consistent
-    # regardless of how many lines a paragraph actually wraps to.
-    FONTSIZE, LINESPACING = 10, 1.75
-    per_line = FONTSIZE * LINESPACING / 72 / PAGE_H
-    y = 0.885
-    for head, accent, para in sections:
+    HEADER_STEP, SECTION_GAP, LINESPACING = 0.040, 0.045, 1.75
+    wrapped = [(head, accent, textwrap.wrap(para, 100)) for head, accent, para in sections]
+    total_lines = sum(len(lines) for _, _, lines in wrapped)
+
+    # A wider sample (more games each side -> longer paragraphs) can need
+    # more vertical room than three sections at a fixed 10pt leave for the
+    # footer below - confirmed directly on an 11-a-side sample, where the
+    # last paragraph's final line ran under the footer notes. The font
+    # shrinks to fit the measured content instead of the footer silently
+    # overlapping whatever paragraph happened to run long.
+    TOP, FOOTER_RESERVE = 0.885, 0.095
+    fixed_overhead = len(sections) * (HEADER_STEP + SECTION_GAP)
+    budget = TOP - FOOTER_RESERVE - fixed_overhead
+    FONTSIZE = 10.0
+    per_line = line_pitch(fig, FONTSIZE, LINESPACING)
+    needed = total_lines * per_line
+    if needed > budget and total_lines:
+        FONTSIZE = max(7.5, FONTSIZE * budget / needed)
+        per_line = line_pitch(fig, FONTSIZE, LINESPACING)
+
+    y = TOP
+    for head, accent, lines in wrapped:
         ax = fig.add_axes([0.075, y - 0.006, 0.02, 0.022]); ax.axis("off")
         ax.set_xlim(0, 1); ax.set_ylim(0, 1)
         ax.add_patch(Rectangle((0, 0), 1, 1, fc=accent, ec="none"))
         fig.text(0.108, y, head, ha="left", va="center", color=INK,
                  fontsize=13, weight="bold")
-        y -= 0.040
-        lines = textwrap.wrap(para, 100)
+        y -= HEADER_STEP
         fig.text(0.075, y, "\n".join(lines), ha="left", va="top",
                  color="#B9C4D2", fontsize=FONTSIZE, linespacing=LINESPACING)
-        y -= len(lines) * per_line + 0.045
+        y -= len(lines) * per_line + SECTION_GAP
 
+    # Anchored to wherever the three sections actually ended, not a fixed
+    # position - the budget above keeps this from running off the page in
+    # the normal case, but a dynamic anchor is what actually guarantees no
+    # overlap regardless.
     n_opp, n_our = len(f["opp_matches"]), len(f["our_matches"])
     match_note = (f"{n_opp} matches for them, {n_our} for us" if n_opp != n_our
                  else f"{n_opp} matches each")
     division_qualifier = (", who play in a different competition to Orient"
                           if f["ref_diff_division"] else "")
-    fig.text(0.5, 0.062,
+    y -= 0.005
+    fig.text(0.5, y,
              f"{match_note}{division_qualifier}. Treat the patterns as "
              f"reasonably reliable and the individual figures as indicative.",
-             ha="center", va="center", color=MUTED, fontsize=7.6)
+             ha="center", va="top", color=MUTED, fontsize=7.6)
+    y -= line_pitch(fig, 7.6, 1.0) + 0.012
     footer = (f"Built from {OPPONENT} ({f['opp_comp_mix']}) and Orient "
              f"({f['our_comp_mix']}). The channel read is the most "
              f"actionable part and the most sample-sensitive — worth "
              f"re-checking as more matches come in.")
-    fig.text(0.5, 0.030, "\n".join(textwrap.wrap(footer, 115)), ha="center",
-             va="center", color=MUTED, fontsize=7.0, linespacing=1.6)
+    fig.text(0.5, y, "\n".join(textwrap.wrap(footer, 115)), ha="center",
+             va="top", color=MUTED, fontsize=7.0, linespacing=1.6)
 
 
 def main():

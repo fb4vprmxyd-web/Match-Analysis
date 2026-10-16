@@ -86,8 +86,13 @@ def team_stats(ev: pd.DataFrame, psum: pd.DataFrame, team: str, opp: str,
         tilt = ev[tilt_mask].groupby("squadName").size()
         tilt = (tilt / tilt.sum() * 100).to_dict()
 
-    box_touch = _count_by_squad(
-        ev, (ev.startPitchPosition == "OPPONENT_BOX") & (ev.OFFENSIVE_TOUCHES > 0))
+    # Any event starting with the ball already in the box - not just events
+    # flagged OFFENSIVE_TOUCHES>0, which Impect populates almost exclusively
+    # on RECEPTION (a player taking control of the ball) and leaves null on
+    # shots, passes and dribbles. Filtering on it undercounted badly: a shot
+    # taken first-time off a cross, with no separate "reception" in between,
+    # never registered as a box touch at all.
+    box_touch = _count_by_squad(ev, ev.startPitchPosition == "OPPONENT_BOX")
 
     succ = _sum_by_squad(ev, "SUCCESSFUL_PASSES")
     unsucc = _sum_by_squad(ev, "UNSUCCESSFUL_PASSES")
@@ -205,8 +210,11 @@ def passes_into_box(ev, squad):
 
 
 def box_touches(ev, squad):
-    return ev[(ev.squadName == squad) & (ev.startPitchPosition == "OPPONENT_BOX")
-              & (ev.OFFENSIVE_TOUCHES > 0)].copy()
+    """Every event that started with the ball already in the box - see the
+    note on the team_stats() box_touch count for why this isn't filtered to
+    OFFENSIVE_TOUCHES>0."""
+    return ev[(ev.squadName == squad)
+              & (ev.startPitchPosition == "OPPONENT_BOX")].copy()
 
 
 def cross_target_share(ev, squad):
@@ -635,14 +643,15 @@ def performance_review(ev, psum, squad_sums, scores, setp, tbl, team, opp,
         # Language scales with the margin: 64% is "far more", 55% is not.
         strength = "far more" if tilt >= 0.62 else "the greater share"
         if poss and poss > 0.53:
-            detail = (f"Orient had both the ball and the territory, playing "
-                      f"{strength} of the game in the opposition half. The "
-                      f"platform to attack from was there for long spells.")
+            detail = (f"Orient had both the ball and the territory, spending "
+                      f"{strength} of the game in the opposition's half - a "
+                      f"platform to attack from for long spells.")
         else:
             # possession near 50/50 - claiming "more of the ball" would be false
-            detail = (f"Possession was shared almost evenly, but Orient played "
-                      f"{strength} of the game in the opposition half. They did "
-                      f"not dominate the ball so much as dominate where it was.")
+            detail = (f"Possession was shared almost evenly, but Orient still "
+                      f"spent {strength} of the game in the opposition's half. "
+                      f"It wasn't about having more of the ball, it was about "
+                      f"where that ball spent its time.")
         pros.append(("Controlled the territory", detail))
 
     # --- did control become danger?
@@ -858,13 +867,16 @@ def performance_review(ev, psum, squad_sums, scores, setp, tbl, team, opp,
     cps, cg = s("CONCEDED_POSTSHOT_XG"), s("CONCEDED_GOALS")
     if cps > cg + 0.5:
         pros.append(("The goalkeeper kept them in it",
-                     "The quality of what was faced was greater than what ended "
-                     "up in the net. Good goalkeeping papered over the chances "
-                     "given away."))
+                     f"{opp} created more than they actually scored - good "
+                     f"goalkeeping made up the difference."))
 
     # --- individual bright spots
     # Both were previously unconditional, so the column always gained two
-    # positives however ordinary the individual numbers were.
+    # positives however ordinary the individual numbers were. Each detail
+    # names its own player rather than leaning on "he"/"him": these get
+    # joined into one flowing paragraph with no title shown, and a bare
+    # pronoun here used to borrow whatever subject the previous sentence
+    # happened to have (reading as if the goalkeeper had done this too).
     if len(tbl):
         topp = tbl.sort_values("BPD", ascending=False).iloc[0]
         topr = tbl.sort_values("BPDR", ascending=False).iloc[0]
@@ -873,15 +885,17 @@ def performance_review(ev, psum, squad_sums, scores, setp, tbl, team, opp,
         bpdr_share = topr.BPDR / bpdr_tot if bpdr_tot else 0
 
         if topp.BPD >= 8 or bpd_share >= 0.25:
-            pros.append((f"{surname(topp.playerName)} broke lines",
-                         "He carried and passed the opposition out of the game "
-                         "more than anyone, which shows there is a route forward "
-                         "when the ball is used decisively."))
+            name = surname(topp.playerName)
+            pros.append((f"{name} broke lines",
+                         f"{name} carried and passed through the opposition "
+                         f"more than anyone else on the pitch - proof there's "
+                         f"a route forward when the ball is used decisively."))
         if bpdr_share >= 0.25:
-            pros.append((f"A clear focal point in {surname(topr.playerName)}",
-                         "The largest single share of Orient's progression "
-                         "ran through him as the receiver. The side knows "
-                         "where its out-ball is."))
+            name = surname(topr.playerName)
+            pros.append((f"A clear focal point in {name}",
+                         f"A big share of Orient's progression went through "
+                         f"{name} as the man receiving the ball, which says a "
+                         f"lot about where the side looks to get out."))
 
     # --- how it went: a plain-language scene-setter for the Performance
     # Review page, reusing the same signals already computed above

@@ -196,6 +196,32 @@ def stat_table(fig, rect, rows, left_label, right_label, header=None,
             ax.plot([0, 1], [liney, liney], color=GRID, lw=0.7)
 
 
+def line_pitch(fig, fontsize, linespacing):
+    """Real per-line vertical step for a multi-line fig.text() call, in
+    figure-fraction units - for stacking a wrapped paragraph's line count
+    into a reserved block of page space (see page_plan() and
+    page_performance_review()).
+
+    matplotlib's actual rendered line spacing is the active font's own
+    line-height metric times `linespacing`, not fontsize times linespacing
+    directly - measured ~37% taller than that naive product for every font
+    this project has rendered with (Avenir Next locally, DejaVu Sans in
+    Docker). A layout formula using the naive product silently undershoots
+    a paragraph's real height, and a long enough paragraph ends up with
+    its last line under the next section's header instead of above it -
+    confirmed directly on a Bradford City pre-match report (a 10-line
+    paragraph) and, less visibly, on a post-match Performance Review page.
+    Rendering two real lines and measuring the actual gap between them
+    sidesteps ever needing to know that factor in advance, and stays
+    correct if the active font changes.
+    """
+    t = fig.text(0.5, 0.5, "Ag\nAg", fontsize=fontsize, linespacing=linespacing)
+    fig.canvas.draw()
+    bbox = t.get_window_extent(fig.canvas.get_renderer())
+    t.remove()
+    return (bbox.height / fig.bbox.height) / 2
+
+
 def player_table(fig, rect, rows, col_labels, header=None):
     """Same picture-style row/divider table as stat_table(), for a list of
     players rather than a two-team comparison. `rows` is a list of tuples
@@ -219,6 +245,12 @@ def player_table(fig, rect, rows, col_labels, header=None):
     ax.plot([0, 1], [top, top], color=GRID, lw=1.0)
     n = len(rows) or 1
     row_h = top / n
+    # 8.8pt assumed roughly a dozen rows fit the rect (true for most panels).
+    # A longer roster - every player who touched the ball in a given role -
+    # shrinks the font to fit instead of stacking rows closer than the text
+    # itself is tall, which is what was overlapping adjacent rows.
+    row_h_pts = row_h * rect[3] * PAGE_H * 72
+    fontsize = min(8.8, max(5.8, row_h_pts / 1.35))
     for i, row in enumerate(rows):
         y = top - (i + 0.5) * row_h
         if i % 2 == 1:
@@ -226,7 +258,7 @@ def player_table(fig, rect, rows, col_labels, header=None):
                                    fc=PANEL, ec="none", zorder=0))
         for j, val in enumerate(row):
             ax.text(col_x[j], y, str(val), ha=("left" if j == 0 else "right"),
-                    va="center", color=INK, fontsize=8.8,
+                    va="center", color=INK, fontsize=fontsize,
                     weight=("bold" if j == 0 else "normal"))
         if i < n - 1:
             liney = top - (i + 1) * row_h

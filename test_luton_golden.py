@@ -69,7 +69,7 @@ EXPECTED_TEAM_STATS = [
     ["Bypassed Defenders", "36.1", "66.1"],
     ["Possession", "47%", "53%"],
     ["Field Tilt", "55%", "45%"],
-    ["Box Touches", "6", "12"],
+    ["Box Touches", "22", "61"],
     ["Shots", "6", "20"],
     ["Shots on Target", "3", "6"],
     ["Successful Passes", "377", "438"],

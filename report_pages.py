@@ -11,7 +11,7 @@ from matplotlib.lines import Line2D
 from report_config import (BG, PANEL, INK, MUTED, GRID, TEAM_C, OPP_C, GOOD, BAD,
                            BARC, PAGE_W, PAGE_H, FONT, draw_pitch, style_bar_axis,
                            surname, contrast_ink, PITCH_X, PITCH_Y,
-                           player_table, stat_table)
+                           player_table, stat_table, line_pitch)
 import report_metrics as M
 
 
@@ -1011,12 +1011,10 @@ def page_performance_review(fig, pros, cons, how_it_went, team, opp, score_line)
         ("WHAT WE ACHIEVED", GOOD, achieved),
         ("WHERE WE CAN IMPROVE", BAD, improve),
     ]
-    # matplotlib's text line height is fontsize * linespacing, in points -
-    # converting that to a figure-fraction-per-line step (rather than a
-    # guessed constant) keeps the gap between sections consistent
-    # regardless of how many lines a paragraph actually wraps to.
+    # Measured, not computed from fontsize*linespacing directly - see
+    # line_pitch()'s docstring for why the naive formula undershoots.
     FONTSIZE, LINESPACING = 11, 1.75
-    per_line = FONTSIZE * LINESPACING / 72 / PAGE_H
+    per_line = line_pitch(fig, FONTSIZE, LINESPACING)
     y = 0.865
     for head, accent, para in sections:
         ax = fig.add_axes([0.075, y - 0.006, 0.02, 0.022]); ax.axis("off")
