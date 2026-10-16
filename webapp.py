@@ -38,11 +38,15 @@ inside dashboard.html's iframe panes the sidebar already provides that;
 when opened directly (a shared link) the per-page <title> and content
 carry enough context on their own.
 
-Deliberately no server-side session/state between requests - the
-interpreted result travels through the page itself (a hidden JSON field)
-so "confirm" only ever acts on exactly what was just shown, never a stale
-re-interpretation. No auth yet either - see the module docstring in
-match_lookup.py; this is local/LAN-only until it's closer to deployment.
+Deliberately no server-side session/state between requests beyond who's
+signed in - the interpreted result travels through the page itself (a
+hidden JSON field) so "confirm" only ever acts on exactly what was just
+shown, never a stale re-interpretation. Login is real (see auth.py): every
+route except /login requires a session. Behind a reverse proxy (Caddy on
+the droplet, terminating TLS - this app never speaks TLS itself), set
+FORCE_HTTPS=1 so the session cookie is marked Secure; ProxyFix below makes
+Flask trust the proxy's X-Forwarded-Proto so redirects/url_for still
+resolve to https:// rather than quietly downgrading to http://.
 
 Data collection (run.py's incremental pull) runs on its own schedule now
 (see scheduler.py / docker-compose.yml's `scheduler` service) - nobody
@@ -64,6 +68,7 @@ from datetime import datetime, timezone
 import anthropic
 from flask import (Flask, render_template, request, abort, send_from_directory,
                    send_file, session, redirect, url_for)
+from werkzeug.middleware.proxy_fix import ProxyFix
 
 import auth
 import db as DB
@@ -84,6 +89,24 @@ app = Flask(__name__)
 # worker restart (and every request landing on a different worker) logs
 # everyone out.
 app.secret_key = os.environ.get("FLASK_SECRET_KEY") or os.urandom(32)
+
+# Trust exactly one hop of X-Forwarded-* - the droplet's Caddy container,
+# which terminates TLS and forwards plain HTTP to gunicorn internally over
+# their shared Docker network (see docker-compose.prod.yml). Without this,
+# Flask sees every request as scheme=http (Caddy's own connection to it),
+# so url_for(..., _external=True) and the Secure cookie flag below would
+# both silently misbehave even though the browser is really on https://. A
+# no-op when there's no proxy in front (nothing sets these headers), so
+# this is safe for local `python3 webapp.py` too.
+app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
+
+# Only mark the session cookie Secure once there's actually a TLS-terminating
+# proxy in front - set FORCE_HTTPS=1 in the droplet's .env once Caddy is
+# live. Doing this unconditionally would break login over plain HTTP (every
+# local/Docker test so far), since browsers refuse to send a Secure cookie
+# back over an insecure connection.
+app.config["SESSION_COOKIE_SECURE"] = os.environ.get("FORCE_HTTPS", "") == "1"
+app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
 
 # Routes reachable without being signed in - the login page itself, plus
 # Flask's own static file handler if one's ever added. Everything else,
