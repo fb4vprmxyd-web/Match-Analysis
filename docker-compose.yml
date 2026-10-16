@@ -26,6 +26,25 @@
 # droplet's own .env before deploying there - see .env.example. Likewise
 # AUTH_USERS/FLASK_SECRET_KEY for `webapp` (see auth.py): leaving either
 # unset means nobody can sign in, or everyone gets logged out at random.
+#
+# PRODUCTION: Postgres publishes no port at all, and `webapp` publishes
+# only to 127.0.0.1 - neither is reachable from outside the droplet by
+# itself. On the shared droplet, `webapp` is reached by a colleague's
+# existing Caddy container, itself in its own Docker Compose project - not
+# a host-level proxy, so reaching it needs `webapp` joined onto that
+# project's Docker network rather than (or alongside) the 127.0.0.1 port
+# above. See docker-compose.prod.yml, applied as an extra layer on top of
+# this file rather than edited into it, and deploy/CADDY_SETUP.md for the
+# exact block to hand the colleague. Once Caddy is actually routing to us
+# with real TLS, also set FORCE_HTTPS=1 so the session cookie is marked
+# Secure (see webapp.py) - Caddy sets X-Forwarded-Proto on its own, so
+# ProxyFix there needs no further config either way.
+#
+# name: pins this project's name explicitly - the working directory has
+# spaces ("post match analysis"), which Compose would otherwise sanitize
+# into something unpredictable, and a shared droplet needs every project's
+# containers/volumes/network clearly distinct from a colleague's.
+name: match-analysis
 
 services:
   postgres:
@@ -35,8 +54,11 @@ services:
       POSTGRES_DB: match_analysis
       POSTGRES_USER: match_analysis
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-devpassword}
-    ports:
-      - "5432:5432"
+    # No `ports:` - nothing outside the `app`/`scheduler`/`webapp` containers
+    # needs to reach Postgres directly. They all talk to it over the
+    # Docker-internal `postgres` hostname on the compose network already.
+    # For a one-off manual check, `docker compose exec postgres psql -U
+    # match_analysis` works without publishing anything to the host at all.
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -106,12 +128,19 @@ services:
         condition: service_healthy
     volumes:
       - appdata:/data
-    ports:
-      - "5050:5050"
-    # --bind 0.0.0.0: the gunicorn process itself has to listen on every
-    # interface inside the container, not just loopback, or the `ports`
-    # mapping above has nothing to forward to - a container's loopback
-    # isn't reachable from the host the way a plain localhost process is.
+    # No `ports:` here on purpose - the droplet's colleague-run Caddy
+    # reaches this container over the shared `lofc_default` Docker network
+    # instead (see docker-compose.prod.yml), not a published port at all,
+    # per their explicit request not to publish anything on the host (the
+    # droplet's firewall only allows 22/80/443 inbound anyway). Local dev
+    # gets its port back from docker-compose.override.yml, which plain
+    # `docker compose up` picks up automatically but an explicit `-f
+    # docker-compose.yml -f docker-compose.prod.yml` (used on the droplet)
+    # does not.
+    # --bind 0.0.0.0: the gunicorn process itself still has to listen on
+    # every interface *inside* the container, same reasoning as any
+    # container - its own loopback isn't reachable from outside it either
+    # way, published port or Docker network.
     command: ["gunicorn", "--bind", "0.0.0.0:5050", "--workers", "3",
               "--access-logfile", "-", "webapp:app"]
     restart: unless-stopped

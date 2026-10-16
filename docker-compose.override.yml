@@ -1,0 +1,10 @@
+# Local-dev-only: Compose picks this up automatically for plain `docker
+# compose up` (no -f flags), giving `webapp` back a port on localhost for
+# testing on this machine. The droplet deploy always runs with explicit
+# `-f docker-compose.yml -f docker-compose.prod.yml`, which disables this
+# automatic file entirely - so this never applies there, and never
+# conflicts with docker-compose.prod.yml's "don't publish anything" setup.
+services:
+  webapp:
+    ports:
+      - "127.0.0.1:5050:5050"

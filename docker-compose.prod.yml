@@ -1,0 +1,38 @@
+# Droplet-only overlay - applies on top of docker-compose.yml, never used
+# alone:
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+#
+# Puts `webapp` on the colleague's existing `lofc_default` Docker network
+# under the fixed alias `match-analysis` - exactly what their Caddy is
+# configured to forward orient-matchanalysis.duckdns.org to
+# (match-analysis:5050), per their own instructions. The alias matters
+# more than our actual service name here: Caddy's config references
+# `match-analysis` specifically, not `webapp`, so the alias is what makes
+# their config correct regardless of what we call the service on our side.
+#
+# `lofc_default` isn't something we create: Compose names a project's own
+# default network "<project>_default" automatically, so this is simply the
+# colleague's "lofc" project's existing network, declared `external` so
+# Compose attaches to it instead of trying to create its own.
+#
+# Not merged into docker-compose.yml itself because that file still needs
+# to run standalone for local dev/testing, where `lofc_default` doesn't
+# exist - a non-overlay reference to an external network that isn't there
+# would just fail `docker compose up` for anyone not on this specific
+# droplet.
+#
+# Deliberately adds no `ports:` - see docker-compose.yml's own note on
+# `webapp` for why (the colleague asked us not to publish anything on the
+# host at all, and the droplet's firewall only allows 22/80/443 inbound
+# regardless).
+networks:
+  lofc_default:
+    external: true
+
+services:
+  webapp:
+    networks:
+      default: {}
+      lofc_default:
+        aliases:
+          - match-analysis
