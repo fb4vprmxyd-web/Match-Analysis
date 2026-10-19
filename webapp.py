@@ -203,15 +203,22 @@ def _prematch_cards():
         c["corner_url"] = f"/reports/Set Piece Report - {opp}.pdf" if corner_path.exists() else None
         if c["prematch_url"] or c["corner_url"]:
             out.append(c)
-    # Soonest fixture first - what a coach's assistant actually wants from a
-    # pre-match list ("what's coming up next"), not build order. fixture_text
-    # ends in a date formatted "%A %-d %B %Y" (see match_selector._format_
-    # fixture) - parsed back out rather than stored separately, since the
-    # display string already has it. Stable-sorted by built_at first so
-    # undated cards (no scheduled rematch found, e.g. a cup-only opponent)
-    # still have a sensible order among themselves, pushed after every dated
-    # one rather than sorting as if their date were "now".
+    # Same ordering convention as Post-Match Reports: most recent date
+    # first. Most of these cards are now historical snapshots (pre-match
+    # state "as of" an already-played kickoff, see build_prematch.py's
+    # before_date sampling), not previews of what's still ahead, so a past
+    # date here is normal and expected, not suspicious - sorting newest
+    # date first naturally surfaces the latest game's snapshot above the
+    # early-season ones, same as Post-Match does. fixture_text ends in a
+    # date formatted "%A %-d %B %Y" (see match_selector._format_fixture) -
+    # parsed back out rather than stored separately, since the display
+    # string already has it.
     out.sort(key=lambda c: c["built_at"], reverse=True)
+
+    played_opponents = {
+        path.stem[len("Post Match Report - Leyton Orient v "):].rsplit(" (", 1)[0]
+        for path in REPORTS_ROOT.glob("Post Match Report - Leyton Orient v *.pdf")
+    }
 
     def _fixture_sort_key(c):
         text = c.get("fixture_text") or ""
@@ -219,17 +226,16 @@ def _prematch_cards():
         try:
             d = datetime.strptime(date_part, "%A %d %B %Y")
         except ValueError:
-            return (1, datetime.min)
-        # A scheduled date already in the past for a fixture Impect still
-        # treats as not-yet-played means the match was postponed and hasn't
-        # been rescheduled yet (confirmed on Mansfield Town: "25 September
-        # 2026" showing after that date had already passed) - the date
-        # string is stale, not actually "sooner than everything else." Goes
-        # in the same unknown bucket as a cup-only opponent with no fixture
-        # at all, rather than sorting as if it's the most urgent one.
-        if d.date() < datetime.now(timezone.utc).date():
-            return (1, datetime.min)
-        return (0, d)
+            return (1, 0)
+        # A scheduled date already in the past with no post-match report to
+        # show for it means the match was postponed, not actually played on
+        # that date (confirmed on Mansfield Town) - comparing to "today"
+        # alone can't tell a postponement apart from a genuine historical
+        # snapshot once most of these dates are in the past by design, but
+        # "was a post-match report ever built for this opponent" can.
+        if c["opponent"] not in played_opponents and d.date() < datetime.now(timezone.utc).date():
+            return (1, 0)
+        return (0, -d.toordinal())
 
     out.sort(key=_fixture_sort_key)
     return out
