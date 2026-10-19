@@ -88,17 +88,6 @@
     font-weight: 600;
     color: var(--muted);
   }
-  .sidebar-note {
-    margin-top: 20px;
-    padding: 12px 12px;
-    background: #1B2432;
-    border: 1px solid var(--grid);
-    border-radius: 8px;
-    color: var(--muted);
-    font-size: 11.5px;
-    line-height: 1.6;
-  }
-
   .content { flex: 1; min-width: 0; padding: 40px 44px 60px; }
   .pane { display: none; }
   .pane.active { display: block; }
@@ -210,7 +199,6 @@
     }
     .navlist { display: flex; flex-wrap: wrap; gap: 6px; }
     .navlist li { margin-bottom: 0; }
-    .sidebar-note { display: none; }
     .content { padding: 28px 20px 50px; }
     .frame-wrap { height: 80vh; }
   }
@@ -231,10 +219,6 @@
       <li><button class="navitem" data-target="brief" style="--accent:#9B6FE3"><span class="dot"></span>Coach's Brief</button></li>
       <li><button class="navitem" data-target="selector" style="--accent:#2BC9A5"><span class="dot"></span>Pre-Match Selector</button></li>
     </ul>
-    <div class="sidebar-note">
-      Burton Albion and Wycombe Wanderers post-match reports are left off this
-      dashboard by request. New features get their own row in this list.
-    </div>
     <a href="/logout" class="muted" style="margin:14px 10px 0; font-size:12px;">Sign out{{ ' (' + session_user + ')' if session_user }}</a>
   </nav>
 
