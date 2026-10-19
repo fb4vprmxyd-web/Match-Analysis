@@ -66,6 +66,7 @@ import sys
 from datetime import datetime, timezone
 
 import anthropic
+import pandas as pd
 from flask import (Flask, render_template, request, abort, send_from_directory,
                    send_file, session, redirect, url_for)
 from werkzeug.middleware.proxy_fix import ProxyFix
@@ -252,8 +253,27 @@ def dashboard():
 @app.route("/brief")
 def brief_list():
     state = load_state()
+    # Sorted by the real match date, newest first - same convention as the
+    # dashboard's Post-Match/Pre-Match panes. match_id isn't chronological
+    # (Impect assigns ids per-competition/account, not in played order -
+    # Oxford United's August cup tie has a *larger* id than October league
+    # matches), so sorting by it directly was silently wrong, not just
+    # inconsistent with the other panes. One discover() call covers every
+    # match's date rather than re-fetching per match.
+    cfg, team = _cfg_team()
+    try:
+        all_matches, _, _, _ = discover(cfg, team)
+        dates = {str(int(r.id)): r.scheduledDate for _, r in all_matches.iterrows()}
+    except Exception:
+        dates = {}
+
+    def _sort_key(mid):
+        d = dates.get(mid)
+        return pd.to_datetime(d, utc=True, errors="coerce") if d else pd.Timestamp.min.tz_localize("UTC")
+
     matches = []
-    for mid, rec in sorted(state.items(), key=lambda kv: kv[0], reverse=True):
+    for mid in sorted(state.keys(), key=_sort_key, reverse=True):
+        rec = state[mid]
         has_brief = DB.available() and DB.load_coach_brief_notes(int(mid)) is not None
         matches.append({
             "id": mid,
