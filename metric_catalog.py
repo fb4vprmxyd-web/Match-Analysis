@@ -178,8 +178,12 @@ register(MetricSpec("lane_share", "Progression through a lane/lanes",
 
 def _mirrored_ball_wins_compute(ev, psum, squad_sums, scores, setp, squad,
                                 opp_side_lanes=(), **_):
-    opp_side_lanes = (opp_side_lanes if isinstance(opp_side_lanes, (list, tuple))
-                      else (opp_side_lanes,))
+    raw = (opp_side_lanes if isinstance(opp_side_lanes, (list, tuple))
+          else (opp_side_lanes,))
+    opp_side_lanes = tuple(
+        lane for item in raw
+        for lane in (item.split(",") if isinstance(item, str) else (item,))
+    )
     own_lanes = tuple(MIRROR[l] for l in opp_side_lanes)
     d_all = ev[(ev.squadName == squad) & (ev.BALL_WIN_NUMBER > 0)]
     d = d_all[d_all.startLane.isin(own_lanes)]
