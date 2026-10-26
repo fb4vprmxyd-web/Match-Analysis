@@ -61,6 +61,7 @@ longer needs anyone but the coach's assistant.
 
 import json
 import os
+import re
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -242,12 +243,96 @@ def _prematch_cards():
     return out
 
 
+def _match_result(r, team):
+    """(home, gf, ga, result_word, penalty_note) for one fixture row, from
+    Orient's own perspective. homeSquadGoals/awaySquadGoals hold the
+    PENALTY SHOOTOUT score instead of the actual score once resultType
+    isn't REGULAR - confirmed on FC Walsall's 2026-08-25 EFL Cup tie
+    (goals fields show 5-6, but Impect's own `result` string is
+    "5:6p (0:0, 0:0)" - a 0-0 draw won 6-5 on penalties) - so the real
+    score there has to be parsed back out of that string's last
+    parenthesised group instead."""
+    home = bool(r.homeSquadName == team)
+    result_type = str(r.get("resultType") or "REGULAR")
+    penalty_note = ""
+    if result_type == "REGULAR":
+        hg, ag = int(r.homeSquadGoals), int(r.awaySquadGoals)
+    else:
+        txt = str(r.get("result") or "")
+        groups = re.findall(r"\(([^)]*)\)", txt)
+        last = groups[-1].split(",")[-1].strip() if groups else ""
+        try:
+            hg, ag = (int(x) for x in last.split(":"))
+        except ValueError:
+            hg, ag = int(r.homeSquadGoals), int(r.awaySquadGoals)
+        pk_home, pk_away = int(r.homeSquadGoals), int(r.awaySquadGoals)
+        us_pk, opp_pk = (pk_home, pk_away) if home else (pk_away, pk_home)
+        penalty_note = (f" ({'won' if us_pk > opp_pk else 'lost'} "
+                        f"{us_pk}–{opp_pk} on penalties)")
+
+    gf, ga = (hg, ag) if home else (ag, hg)
+    result = "won" if gf > ga else ("lost" if gf < ga else "drew")
+    return home, gf, ga, result, penalty_note
+
+
+def _postmatch_cards():
+    """One card per match with a post-match report on disk - driven
+    entirely by load_state() (the same ledger run.py writes to and a
+    Coach's Brief save rebuilds from, see brief_save() above), not a
+    hand-maintained list. A report built by the scheduler, a manual run.py
+    pull, or a Coach's Brief save therefore shows up here automatically;
+    a re-save always reflects the one rebuilt file on disk rather than
+    creating a stale duplicate entry, since state only ever has one
+    record per match id."""
+    state = load_state()
+    if not state:
+        return []
+    cfg, team = _cfg_team()
+    try:
+        matches, apis, problems, reached = discover(cfg, team)
+    except Exception:
+        matches = pd.DataFrame()
+
+    cards = []
+    for mid, rec in state.items():
+        output = rec.get("output")
+        opp = rec.get("opponent", "?")
+        if not output or not (REPORTS_ROOT / output).exists():
+            continue
+
+        row = matches[matches.id == int(mid)] if len(matches) else matches
+        home = gf = ga = result = None
+        penalty_note = ""
+        competition = ""
+        date = None
+        if len(row):
+            r = row.iloc[0]
+            home, gf, ga, result, penalty_note = _match_result(r, team)
+            competition = str(r.get("competitionName", "") or "")
+            date = pd.to_datetime(r.scheduledDate, utc=True, errors="coerce")
+
+        has_brief = DB.available() and DB.load_coach_brief_notes(int(mid)) is not None
+
+        cards.append({
+            "match_id": mid, "opponent": opp, "output": output,
+            "accent": OPP_COLOURS.get(opp, DEFAULT_OPP_COLOUR),
+            "competition": competition, "home": home,
+            "gf": gf, "ga": ga, "result": result, "penalty_note": penalty_note,
+            "has_brief": has_brief, "date": date,
+        })
+
+    cards.sort(key=lambda c: c["date"] if c["date"] is not None and pd.notna(c["date"])
+              else pd.Timestamp.min.tz_localize("UTC"), reverse=True)
+    return cards
+
+
 @app.route("/")
 def dashboard():
     cards = _prematch_cards()
     return render_template("dashboard.html",
                           prematch_cards=[c for c in cards if c["prematch_url"]],
-                          corner_cards=[c for c in cards if c["corner_url"]])
+                          corner_cards=[c for c in cards if c["corner_url"]],
+                          postmatch_cards=_postmatch_cards())
 
 
 @app.route("/brief")
