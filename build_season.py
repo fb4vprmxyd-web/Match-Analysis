@@ -22,10 +22,12 @@ warnings.filterwarnings("ignore")
 
 from envconfig import load_env, load_match, ROOT, CACHE_ROOT, REPORTS_ROOT
 from run import discover, slug, pretty_matchday, load_state, OPP_COLOURS, DEFAULT_OPP_COLOUR
+from build_corners import corner_phases, freekick_phases, throwin_phases
 import manual_corrections as MC
 
 REPORTS_ROOT.mkdir(parents=True, exist_ok=True)
 OUT = REPORTS_ROOT / "season-tracker.html"
+STYLE_OUT = REPORTS_ROOT / "style-analysis.html"
 
 MIN_MINUTES_ROLLING = 180   # floor for the rolling "most impactful" ranking
 MIN_MINUTES_SINGLE = 45     # floor for a single game to count for best/worst
@@ -130,6 +132,234 @@ def division_matches(fb_row, apis):
     except Exception:
         return api, pd.DataFrame()
     return api, m[m.available == True]
+
+
+# column, label, display format - every one a rate/style stat from Impect's
+# squad match scores, deliberately excluding anything outcome-based (goals,
+# points, xG difference). The goal of style_similarity() below is "plays
+# like us", not "as good as us" - mixing in quality metrics would cluster
+# teams by table position instead of by how they actually play.
+STYLE_METRICS = [
+    ("RATIO_BALL_POSSESSION", "Possession", "{:.0%}"),
+    ("FIELD_TILT", "Field Tilt", "{:.0%}"),
+    ("PPDA", "Pressing Intensity (PPDA)", "{:.1f}"),
+    ("MEAN_PRESSURE_HEIGHT", "Press Height", "{:.0f}m"),
+    ("RATIO_PASSING_ACCURACY", "Passing Accuracy", "{:.0%}"),
+    ("PXT_POSITIVE", "Attacking Threat (xT)", "{:.2f}"),
+    ("PRESSURE_DURING_OPP_BUILD_UP_PERCENT", "Press Opponent Build-Up", "{:.0%}"),
+    ("OPP_OPENING_BALLS_PRESSED_PERCENT", "Press Opening Balls", "{:.0%}"),
+    ("PRESSURE_OPP_GK_PERCENT", "Press Goalkeeper", "{:.0%}"),
+    ("FORCED_HIGH_PASSES_PERCENT", "Force Long/High Passes", "{:.0%}"),
+]
+
+
+def style_similarity(api, div_matches, team):
+    """Every League One club's season-to-date style fingerprint, and how
+    far each one sits from Orient's - Euclidean distance across z-scored
+    STYLE_METRICS, so no single metric's raw scale (PPDA ~4-10 vs
+    possession ~30-70%) dominates the comparison just because its numbers
+    are bigger.
+
+    Returns (ranked, our_values, n_clubs): `ranked` is every other club
+    sorted closest-first, each with its raw metric values alongside the
+    distance; `our_values` is Orient's own raw values for the profile
+    panel; `n_clubs` is how many clubs had enough data to be compared
+    (less than the full division if a club is missing a metric entirely).
+    """
+    if api is None or not len(div_matches):
+        return [], {}, 0
+    ids = [int(i) for i in div_matches.id.tolist()]
+    try:
+        sc = api.getSquadMatchScores(matches=ids)
+    except Exception:
+        return [], {}, 0
+
+    cols = [c for c, *_ in STYLE_METRICS]
+    present = [c for c in cols if c in sc.columns]
+    if not present:
+        return [], {}, 0
+    agg = sc.groupby("squadName")[present].mean().dropna()
+    if team not in agg.index or len(agg) < 3:
+        return [], {}, 0
+
+    std = agg.std(ddof=0).replace(0, 1)   # guard a zero-variance column, not expected in practice
+    z = (agg - agg.mean()) / std
+    us_z = z.loc[team]
+    dist = ((z - us_z) ** 2).sum(axis=1).pow(0.5).drop(team).sort_values()
+
+    ranked = []
+    for opp, d in dist.items():
+        row = {"opponent": opp, "distance": float(d)}
+        for col in present:
+            row[col] = float(agg.loc[opp, col])
+        ranked.append(row)
+    our_values = {col: float(agg.loc[team, col]) for col in present}
+    return ranked, our_values, len(agg)
+
+
+TREND_COLS = ["PPDA", "MEAN_PRESSURE_HEIGHT", "RATIO_BALL_POSSESSION", "FIELD_TILT", "PXT_POSITIVE"]
+
+
+def season_trends(log, team, table=None, opp_ppda=None):
+    """Everything below shares one pass over this season's already-cached
+    match data (ss.parquet, squad_scores.parquet, setpieces.parquet per
+    match) rather than several separate ones: xG for/against, a
+    last-5-games style trend against the season average, our set-piece
+    volume/threat, Impect's expected points against the real table, and
+    three splits of the same numbers - home vs away, versus top-third vs
+    mid-table vs bottom-third opponents (by the current table, `table` from
+    league_table() above), and versus opponents who press us hard vs sit
+    off (`opp_ppda`, each opponent's own season-average PPDA, from
+    style_similarity()'s pull - reused rather than fetched again).
+
+    League matches only, same as "Season Record" above - a cup
+    opponent's level can be wildly different from the league, which would
+    distort a trend that's supposed to describe one team's season.
+    """
+    league = [m for m in log if not m["is_cup"] and m["cache"]]
+    if not league:
+        return None
+
+    top_third_squads = bottom_third_squads = set()
+    if table is not None and len(table):
+        n = len(table)
+        cut = max(1, n // 3)
+        top_third_squads = set(table[table.pos <= cut].squad)
+        bottom_third_squads = set(table[table.pos > n - cut].squad)
+
+    ppda_values = list(opp_ppda.values()) if opp_ppda else []
+    ppda_median = float(pd.Series(ppda_values).median()) if ppda_values else None
+
+    per_match = []
+    xg_for_total = xg_against_total = xpts_total = 0.0
+    setp_frames = []
+    splits = {
+        "home": {"pts": 0, "gf": 0, "ga": 0, "xgf": 0.0, "xga": 0.0, "n": 0},
+        "away": {"pts": 0, "gf": 0, "ga": 0, "xgf": 0.0, "xga": 0.0, "n": 0},
+        "top_third": {"pts": 0, "gf": 0, "ga": 0, "xgf": 0.0, "xga": 0.0, "n": 0},
+        "mid_table": {"pts": 0, "gf": 0, "ga": 0, "xgf": 0.0, "xga": 0.0, "n": 0},
+        "bottom_third": {"pts": 0, "gf": 0, "ga": 0, "xgf": 0.0, "xga": 0.0, "n": 0},
+        "pressed": {"acc": [], "bpd": [], "n": 0},
+        "sat_off": {"acc": [], "bpd": [], "n": 0},
+    }
+    pts_map = {"W": 3, "D": 1, "L": 0}
+
+    for m in league:
+        cache = m["cache"]
+        try:
+            ss = pd.read_parquet(cache / "ss.parquet")
+        except Exception:
+            ss = pd.DataFrame()
+        try:
+            sc = pd.read_parquet(cache / "squad_scores.parquet")
+        except Exception:
+            sc = pd.DataFrame()
+
+        us_ss = ss[ss.squadName == team] if len(ss) else ss
+        opp_ss = ss[ss.squadName == m["opponent"]] if len(ss) else ss
+        us_sc = sc[sc.squadName == team] if len(sc) else sc
+
+        xg_for = float(us_ss.SHOT_XG.sum()) if "SHOT_XG" in us_ss.columns and len(us_ss) else 0.0
+        xg_against = float(opp_ss.SHOT_XG.sum()) if "SHOT_XG" in opp_ss.columns and len(opp_ss) else 0.0
+        xg_for_total += xg_for
+        xg_against_total += xg_against
+        bpd = float(us_ss.BYPASSED_DEFENDERS.sum()) if "BYPASSED_DEFENDERS" in us_ss.columns and len(us_ss) else None
+        pts = pts_map[m["result"]]
+
+        row = {"date": m["date"], "opponent": m["opponent"]}
+        pass_acc = None
+        if len(us_sc):
+            r = us_sc.iloc[0]
+            for col in TREND_COLS:
+                if col in r.index and pd.notna(r[col]):
+                    row[col] = float(r[col])
+            if "EXPECTED_POINTS_SHOT_XG" in r.index and pd.notna(r["EXPECTED_POINTS_SHOT_XG"]):
+                xpts_total += float(r["EXPECTED_POINTS_SHOT_XG"])
+            if "RATIO_PASSING_ACCURACY" in r.index and pd.notna(r["RATIO_PASSING_ACCURACY"]):
+                pass_acc = float(r["RATIO_PASSING_ACCURACY"])
+        per_match.append(row)
+
+        side = "home" if m["home"] else "away"
+        splits[side]["n"] += 1
+        splits[side]["pts"] += pts
+        splits[side]["gf"] += m["gf"]
+        splits[side]["ga"] += m["ga"]
+        splits[side]["xgf"] += xg_for
+        splits[side]["xga"] += xg_against
+
+        if top_third_squads or bottom_third_squads:
+            if m["opponent"] in top_third_squads:
+                bucket = "top_third"
+            elif m["opponent"] in bottom_third_squads:
+                bucket = "bottom_third"
+            else:
+                bucket = "mid_table"
+            splits[bucket]["n"] += 1
+            splits[bucket]["pts"] += pts
+            splits[bucket]["gf"] += m["gf"]
+            splits[bucket]["ga"] += m["ga"]
+            splits[bucket]["xgf"] += xg_for
+            splits[bucket]["xga"] += xg_against
+
+        if ppda_median is not None and m["opponent"] in (opp_ppda or {}):
+            # lower PPDA = more aggressive pressing
+            bucket = "pressed" if opp_ppda[m["opponent"]] < ppda_median else "sat_off"
+            splits[bucket]["n"] += 1
+            if pass_acc is not None:
+                splits[bucket]["acc"].append(pass_acc)
+            if bpd is not None:
+                splits[bucket]["bpd"].append(bpd)
+
+        try:
+            setp_frames.append(pd.read_parquet(cache / "setpieces.parquet"))
+        except Exception:
+            pass
+
+    df = pd.DataFrame(per_match)
+    last5 = df.tail(5)
+
+    def _avg(frame, col):
+        vals = frame[col].dropna() if col in frame.columns else pd.Series(dtype=float)
+        return float(vals.mean()) if len(vals) else None
+
+    trend = []
+    label_fmt = {c: (l, f) for c, l, f in STYLE_METRICS}
+    for col in TREND_COLS:
+        season_v, last5_v = _avg(df, col), _avg(last5, col)
+        if season_v is None or last5_v is None or col not in label_fmt:
+            continue
+        label, fmt = label_fmt[col]
+        trend.append(dict(label=label, fmt=fmt, season=season_v, last5=last5_v))
+
+    goals_for = sum(m["gf"] for m in league)
+    goals_against = sum(m["ga"] for m in league)
+    actual_pts = sum(pts_map[m["result"]] for m in league)
+
+    setp_all = pd.concat(setp_frames, ignore_index=True) if setp_frames else pd.DataFrame()
+    setpieces = {}
+    if len(setp_all):
+        for key, fn in (("Corners", corner_phases), ("Free Kicks", freekick_phases),
+                        ("Throw-Ins", throwin_phases)):
+            d = fn(setp_all, attacking=team)
+            setpieces[key] = dict(n=len(d), xg=float(d.xg.sum()) if len(d) else 0.0,
+                                  goals=int(d.goals.sum()) if len(d) else 0)
+
+    for bucket in ("pressed", "sat_off"):
+        splits[bucket]["acc"] = (sum(splits[bucket]["acc"]) / len(splits[bucket]["acc"])
+                                 if splits[bucket]["acc"] else None)
+        splits[bucket]["bpd"] = (sum(splits[bucket]["bpd"]) / len(splits[bucket]["bpd"])
+                                 if splits[bucket]["bpd"] else None)
+
+    return dict(
+        n_matches=len(league),
+        xg_for=xg_for_total, xg_against=xg_against_total,
+        goals_for=goals_for, goals_against=goals_against,
+        trend=trend,
+        xpts_total=xpts_total, actual_pts=actual_pts,
+        setpieces=setpieces,
+        splits=splits, has_table_split=bool(top_third_squads or bottom_third_squads),
+        has_press_split=ppda_median is not None,
+    )
 
 
 def league_table(div_matches, team):
@@ -398,6 +628,338 @@ def percentile_rows(pcts):
         <div class="pctl-rank {cls}">{r['rank']} of {r['n']}</div>
       </div>''')
     return "".join(rows)
+
+
+# A handful of the headline metrics for the similarity table itself - all
+# ten would make the table too wide to read; the full set still shows in
+# Orient's own style-profile panel.
+STYLE_TABLE_COLS = ["RATIO_BALL_POSSESSION", "PPDA", "MEAN_PRESSURE_HEIGHT", "PXT_POSITIVE"]
+
+
+def style_table_rows(ranked):
+    label_by_col = {c: l for c, l, _ in STYLE_METRICS}
+    fmt_by_col = {c: f for c, _, f in STYLE_METRICS}
+    rows = []
+    for i, r in enumerate(ranked):
+        cells = "".join(
+            f'<td class="num">{fmt_by_col[c].format(r[c])}</td>' if c in r else '<td class="num mut">—</td>'
+            for c in STYLE_TABLE_COLS)
+        rows.append(f'''
+      <tr>
+        <td class="mut">{i + 1}</td>
+        <td>{html.escape(r["opponent"])}</td>
+        <td class="num">{r["distance"]:.2f}</td>
+        {cells}
+      </tr>''')
+    return "".join(rows)
+
+
+def style_profile_rows(our_values):
+    rows = []
+    for col, label, fmt in STYLE_METRICS:
+        if col not in our_values:
+            continue
+        rows.append(f'''
+      <div class="pctl-row">
+        <div class="pctl-label">{html.escape(label)}</div>
+        <div class="pctl-val" style="flex:1; text-align:left;">{fmt.format(our_values[col])}</div>
+      </div>''')
+    return "".join(rows)
+
+
+def _diff_span(value, fmt="{:+.2f}", good_if_positive=True):
+    cls = "good" if (value >= 0) == good_if_positive else "bad"
+    return f'<span class="{cls}">{fmt.format(value)}</span>'
+
+
+def xg_cards(trends):
+    gf, xgf = trends["goals_for"], trends["xg_for"]
+    ga, xga = trends["goals_against"], trends["xg_against"]
+    return f'''
+    <div class="cards">
+      <div class="stat"><div class="n">{xgf:.2f}</div><div class="l">xG For</div></div>
+      <div class="stat"><div class="n">{gf}</div><div class="l">Goals For</div></div>
+      <div class="stat"><div class="n">{_diff_span(gf - xgf)}</div><div class="l">Goals vs xG</div></div>
+      <div class="stat"><div class="n">{xga:.2f}</div><div class="l">xG Against</div></div>
+      <div class="stat"><div class="n">{ga}</div><div class="l">Goals Against</div></div>
+      <div class="stat"><div class="n">{_diff_span(xga - ga)}</div><div class="l">Conceded vs xG</div></div>
+    </div>'''
+
+
+def trend_rows(trend):
+    rows = []
+    for t in trend:
+        season_v, last5_v = t["season"], t["last5"]
+        delta = last5_v - season_v
+        arrow = "▲" if delta > 0 else ("▼" if delta < 0 else "–")
+        cls = "mut" if abs(delta) < 1e-9 else ("good" if delta > 0 else "bad")
+        rows.append(f'''
+      <tr>
+        <td>{html.escape(t["label"])}</td>
+        <td class="num">{t["fmt"].format(season_v)}</td>
+        <td class="num">{t["fmt"].format(last5_v)}</td>
+        <td class="num {cls}">{arrow}</td>
+      </tr>''')
+    return "".join(rows)
+
+
+def setpiece_cards(setpieces):
+    cards = []
+    for key in ("Corners", "Free Kicks", "Throw-Ins"):
+        d = setpieces.get(key, {"n": 0, "xg": 0.0, "goals": 0})
+        cards.append(f'''
+      <div class="stat">
+        <div class="n">{d["n"]}</div><div class="l">{html.escape(key)} Taken</div>
+      </div>
+      <div class="stat">
+        <div class="n">{d["xg"]:.2f}</div><div class="l">{html.escape(key)} xG</div>
+      </div>
+      <div class="stat">
+        <div class="n">{d["goals"]}</div><div class="l">{html.escape(key)} Goals</div>
+      </div>''')
+    return f'<div class="cards" style="grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));">{"".join(cards)}</div>'
+
+
+def split_cards(split, label_fmt="{:.0f}"):
+    """Home/away or top-half/bottom-half comparison cards: points per game,
+    goals for/against per game, xG for/against per game - counts alone
+    aren't comparable when the two buckets have different numbers of
+    matches, so everything here is a per-game rate."""
+    n = split["n"] or 1
+    ppg = split["pts"] / n
+    return f'''
+      <div class="stat"><div class="n">{split["n"]}</div><div class="l">Played</div></div>
+      <div class="stat"><div class="n">{split["pts"]}</div><div class="l">Points Gained</div></div>
+      <div class="stat"><div class="n">{ppg:.2f}</div><div class="l">Points/Game</div></div>
+      <div class="stat"><div class="n">{split["gf"] / n:.2f}</div><div class="l">Goals For/Game</div></div>
+      <div class="stat"><div class="n">{split["ga"] / n:.2f}</div><div class="l">Goals Against/Game</div></div>
+      <div class="stat"><div class="n">{split["xgf"] / n:.2f}</div><div class="l">xG For/Game</div></div>
+      <div class="stat"><div class="n">{split["xga"] / n:.2f}</div><div class="l">xG Against/Game</div></div>'''
+
+
+def press_split_cards(split, label):
+    acc = f'{split["acc"] * 100:.0f}%' if split["acc"] is not None else "—"
+    bpd = f'{split["bpd"]:.1f}' if split["bpd"] is not None else "—"
+    return f'''
+      <div class="stat"><div class="n">{split["n"]}</div><div class="l">{html.escape(label)} — Matches</div></div>
+      <div class="stat"><div class="n">{acc}</div><div class="l">{html.escape(label)} — Pass Accuracy</div></div>
+      <div class="stat"><div class="n">{bpd}</div><div class="l">{html.escape(label)} — Bypassed Defenders</div></div>'''
+
+
+STYLE_PAGE = """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Leyton Orient — Playstyle Analysis</title>
+<style>
+  :root {{
+    --bg: #171E29; --panel: #1E2735; --ink: #FFFFFF; --muted: #8B97A8;
+    --grid: #2E3949; --team: #E4002B; --good: #8FE388; --bad: #FF2D2D;
+  }}
+  * {{ box-sizing: border-box; }}
+  body {{
+    margin: 0; background: var(--bg); color: var(--ink);
+    font-family: -apple-system, "Avenir Next", "Helvetica Neue", Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }}
+  header {{ padding: 48px 40px 28px; border-bottom: 1px solid var(--grid); }}
+  header .kicker {{
+    color: var(--team); font-weight: 700; font-size: 12px; letter-spacing: 0.14em;
+    text-transform: uppercase; margin-bottom: 10px;
+  }}
+  header h1 {{ margin: 0 0 8px; font-size: 34px; font-weight: 800; letter-spacing: -0.01em; }}
+  header p {{ margin: 0; color: var(--muted); font-size: 14.5px; max-width: 760px; line-height: 1.5; }}
+  main {{ max-width: 1200px; margin: 0 auto; padding: 36px 40px 80px; }}
+  section {{ margin-bottom: 52px; }}
+  section h2 {{
+    font-size: 13px; font-weight: 700; letter-spacing: 0.10em; text-transform: uppercase;
+    margin: 0 0 4px;
+  }}
+  section .desc {{ color: var(--muted); font-size: 13px; margin: 0 0 18px; max-width: 760px; line-height: 1.5; }}
+  table {{ width: 100%; border-collapse: collapse; background: var(--panel); border: 1px solid var(--grid); border-radius: 10px; overflow: hidden; }}
+  .table-wrap {{ overflow-x: auto; border-radius: 10px; }}
+  th, td {{ padding: 10px 14px; text-align: left; font-size: 13px; border-bottom: 1px solid var(--grid); white-space: nowrap; }}
+  th {{ color: var(--muted); font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; }}
+  tr:last-child td {{ border-bottom: none; }}
+  td.num {{ text-align: right; font-variant-numeric: tabular-nums; }}
+  th.num {{ text-align: right; }}
+  .mut {{ color: var(--muted); }}
+  .good {{ color: var(--good); font-weight: 700; }}
+  .bad {{ color: var(--bad); font-weight: 700; }}
+  .cards {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-bottom: 20px; max-width: 760px; }}
+  .stat {{ background: var(--panel); border: 1px solid var(--grid); border-radius: 10px; padding: 14px 16px; }}
+  .stat .n {{ font-size: 24px; font-weight: 800; }}
+  .stat .l {{ font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; margin-top: 2px; }}
+  .pctl-panel {{ background: var(--panel); border: 1px solid var(--grid); border-radius: 10px; padding: 6px 18px; max-width: 480px; }}
+  .pctl-row {{ display: flex; align-items: center; gap: 14px; padding: 12px 0; border-bottom: 1px solid var(--grid); }}
+  .pctl-row:last-child {{ border-bottom: none; }}
+  .pctl-label {{ width: 190px; flex-shrink: 0; font-size: 13px; }}
+  .pctl-val {{ font-size: 13px; font-variant-numeric: tabular-nums; font-weight: 700; }}
+  .pctl-track {{ flex: 1; height: 8px; background: #2E394980; border-radius: 4px; overflow: hidden; }}
+  .pctl-fill {{ height: 100%; border-radius: 4px; background: var(--team); }}
+  .legend {{ display: flex; gap: 20px; margin-top: 10px; font-size: 12px; color: var(--muted); }}
+  .legend span {{ display: inline-flex; align-items: center; gap: 6px; }}
+  .legend i {{ width: 10px; height: 10px; border-radius: 50%; display: inline-block; }}
+  .note {{
+    margin-top: 10px; padding: 12px 16px; background: #1B2432; border: 1px solid var(--grid);
+    border-radius: 8px; color: var(--muted); font-size: 12.5px; line-height: 1.6;
+  }}
+  footer {{ max-width: 1200px; margin: 0 auto; padding: 0 40px 50px; color: var(--muted); font-size: 11.5px; }}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="kicker">Leyton Orient FC</div>
+  <h1>Playstyle Analysis</h1>
+  <p>This page runs in two halves. The first three sections are pure identity: which League One
+     clubs play most like Orient this season, and which play nothing alike - judged only on
+     style metrics (possession, pressing, territory, passing), never on results or table
+     position. Two clubs with completely different league positions can still play almost
+     identically; that's deliberate - it's the "how", not the "how well". Everything below it
+     flips the question: not how Orient plays, but how that style is actually paying off this
+     season - xG, form, set pieces, points earned vs expected, and how results split by venue,
+     opponent strength, and approach faced.</p>
+  <p class="mut" style="font-size:11.5px;margin-top:10px;">Generated {generated} · {n_clubs} clubs compared</p>
+</header>
+
+<main>
+
+  <section>
+    <h2>Orient's Style Profile</h2>
+    <p class="desc">Season-to-date average across every League One match played so far.</p>
+    <div class="pctl-panel">{profile_rows}</div>
+  </section>
+
+  <section>
+    <h2>Most Similar Clubs</h2>
+    <p class="desc">Ranked by overall distance across ten style metrics (lower = more similar) -
+       not just the four shown here, see the full metric list in the profile panel above.</p>
+    <div class="table-wrap"><table>
+      <thead><tr>
+        <th>#</th><th>Club</th><th class="num">Distance</th>
+        <th class="num">Possession</th><th class="num">PPDA</th>
+        <th class="num">Press Height</th><th class="num">xT</th>
+      </tr></thead>
+      <tbody>{similar_rows}</tbody>
+    </table></div>
+  </section>
+
+  <section>
+    <h2>Least Similar Clubs</h2>
+    <p class="desc">The other end of the table - clubs whose approach looks nothing like Orient's.</p>
+    <div class="table-wrap"><table>
+      <thead><tr>
+        <th>#</th><th>Club</th><th class="num">Distance</th>
+        <th class="num">Possession</th><th class="num">PPDA</th>
+        <th class="num">Press Height</th><th class="num">xT</th>
+      </tr></thead>
+      <tbody>{dissimilar_rows}</tbody>
+    </table></div>
+    <div class="note">
+      Every club has played between 9 and 13 matches so far this season - enough to spot a real
+      pattern, not yet a fully settled identity. Style metrics here deliberately exclude goals,
+      points and xG difference, so this ranks "plays like us", not "as good as us" - a club far
+      apart on this list can still be above or below Orient in the table.
+    </div>
+  </section>
+
+  <section>
+    <h2>xG Over/Under-Performance</h2>
+    <p class="desc">League matches only. A positive "Goals vs xG" means scoring more than the
+       chances deserved; a positive "Conceded vs xG" means the defence has held up better than
+       the chances faced suggested it should.</p>
+    {xg_cards}
+  </section>
+
+  <section>
+    <h2>Recent Form vs Season Average</h2>
+    <p class="desc">Last 5 league matches against the full-season average - a season number can
+       hide a real recent shift either direction.</p>
+    <div class="table-wrap"><table>
+      <thead><tr><th>Metric</th><th class="num">Season Avg</th><th class="num">Last 5</th><th class="num">Trend</th></tr></thead>
+      <tbody>{trend_rows}</tbody>
+    </table></div>
+  </section>
+
+  <section>
+    <h2>Our Set-Piece Profile</h2>
+    <p class="desc">Every corner, wide free kick and near-box throw-in Orient has taken in league
+       play this season, combined - same definitions used to scout opponents, applied to us.</p>
+    {setpiece_cards}
+  </section>
+
+  <section>
+    <h2>Expected Points vs Actual Points</h2>
+    <p class="desc">Impect's own expected-points model, summed across league matches, against the
+       real league table - whether results have run ahead of or behind the underlying performances.</p>
+    <div class="cards">
+      <div class="stat"><div class="n">{xpts_total:.1f}</div><div class="l">Expected Points</div></div>
+      <div class="stat"><div class="n">{actual_pts}</div><div class="l">Actual Points</div></div>
+      <div class="stat"><div class="n">{pts_diff}</div><div class="l">Difference</div></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Home vs Away</h2>
+    <p class="desc">Everything per game, not per total - the two splits won't have the same
+       number of matches.</p>
+    <div style="display:flex; gap:28px; flex-wrap:wrap;">
+      <div>
+        <p class="mut" style="font-size:12px; margin:0 0 8px; text-transform:uppercase; letter-spacing:0.06em;">Home</p>
+        <div class="cards" style="grid-template-columns: repeat(2, minmax(110px,1fr)); max-width:340px;">{home_cards}</div>
+      </div>
+      <div>
+        <p class="mut" style="font-size:12px; margin:0 0 8px; text-transform:uppercase; letter-spacing:0.06em;">Away</p>
+        <div class="cards" style="grid-template-columns: repeat(2, minmax(110px,1fr)); max-width:340px;">{away_cards}</div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Vs Top Third vs Mid-Table vs Bottom Third</h2>
+    <p class="desc">Opponents split into thirds by their current league position, not where they
+       stood on the day Orient played them - a rough but reasonable read on performance against
+       stronger, mid-table, and weaker sides.</p>
+    {table_split_note}
+    <div style="display:flex; gap:28px; flex-wrap:wrap;">
+      <div>
+        <p class="mut" style="font-size:12px; margin:0 0 8px; text-transform:uppercase; letter-spacing:0.06em;">Vs Top Third</p>
+        <div class="cards" style="grid-template-columns: repeat(2, minmax(110px,1fr)); max-width:340px;">{top_third_cards}</div>
+      </div>
+      <div>
+        <p class="mut" style="font-size:12px; margin:0 0 8px; text-transform:uppercase; letter-spacing:0.06em;">Vs Mid-Table</p>
+        <div class="cards" style="grid-template-columns: repeat(2, minmax(110px,1fr)); max-width:340px;">{mid_table_cards}</div>
+      </div>
+      <div>
+        <p class="mut" style="font-size:12px; margin:0 0 8px; text-transform:uppercase; letter-spacing:0.06em;">Vs Bottom Third</p>
+        <div class="cards" style="grid-template-columns: repeat(2, minmax(110px,1fr)); max-width:340px;">{bottom_third_cards}</div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Vs High Press vs Vs Low Block</h2>
+    <p class="desc">Opponents split by their own season-average PPDA (below the 24-club median =
+       presses us hard, above = sits off) - whether Orient's passing actually holds up against
+       teams that come to press, or only looks good against sides that don't bother.</p>
+    {press_split_note}
+    <div class="cards" style="grid-template-columns: repeat(3, minmax(140px,1fr)); max-width:620px;">
+      {pressed_cards}
+      {sat_off_cards}
+    </div>
+  </section>
+
+</main>
+
+<footer>
+  Local page — open style-analysis.html directly in a browser. Nothing here is published or hosted.
+</footer>
+
+</body>
+</html>
+"""
 
 
 def league_table_rows(tbl, team):
@@ -677,6 +1239,9 @@ def main():
     div_api, div_matches = division_matches(fb_row, apis)
     table = league_table(div_matches, team)
     pcts = league_percentiles(div_api, div_matches, team)
+    style_ranked, style_ours, style_n = style_similarity(div_api, div_matches, team)
+    opp_ppda = {r["opponent"]: r["PPDA"] for r in style_ranked if "PPDA" in r}
+    trends = season_trends(log, team, table=table, opp_ppda=opp_ppda)
 
     league = [m for m in log if not m["is_cup"]]
     lg_w = sum(1 for m in league if m["result"] == "W")
@@ -720,6 +1285,52 @@ def main():
     OUT.write_text(html_out)
     print(f"wrote {OUT}  ({len(log)} matches, "
           f"{n_player_matches} with player data)")
+
+    if style_ranked:
+        if trends:
+            pts_diff = trends["actual_pts"] - trends["xpts_total"]
+            pts_diff_txt = f'<span class="{"good" if pts_diff >= 0 else "bad"}">{pts_diff:+.1f}</span>'
+            s = trends["splits"]
+            no_table_note = ('<p class="mut" style="margin:0 0 14px;">Could not load the division '
+                             'table - top/mid/bottom-third split unavailable.</p>'
+                             if not trends["has_table_split"] else "")
+            no_press_note = ('<p class="mut" style="margin:0 0 14px;">Not enough division-wide '
+                             'press data yet.</p>' if not trends["has_press_split"] else "")
+            trend_section = dict(
+                xg_cards=xg_cards(trends), trend_rows=trend_rows(trends["trend"]),
+                setpiece_cards=setpiece_cards(trends["setpieces"]),
+                xpts_total=trends["xpts_total"], actual_pts=trends["actual_pts"],
+                pts_diff=pts_diff_txt,
+                home_cards=split_cards(s["home"]), away_cards=split_cards(s["away"]),
+                table_split_note=no_table_note,
+                top_third_cards=split_cards(s["top_third"]),
+                mid_table_cards=split_cards(s["mid_table"]),
+                bottom_third_cards=split_cards(s["bottom_third"]),
+                press_split_note=no_press_note,
+                pressed_cards=press_split_cards(s["pressed"], "Vs High Press"),
+                sat_off_cards=press_split_cards(s["sat_off"], "Vs Low Block"),
+            )
+        else:
+            empty = '<p class="mut" style="padding:14px 0;">Not enough cached match data yet.</p>'
+            trend_section = dict(
+                xg_cards=empty, trend_rows="", setpiece_cards=empty,
+                xpts_total=0.0, actual_pts=0, pts_diff="–",
+                home_cards="", away_cards="", table_split_note="",
+                top_third_cards="", mid_table_cards="", bottom_third_cards="",
+                press_split_note="", pressed_cards="", sat_off_cards="",
+            )
+        style_html = STYLE_PAGE.format(
+            generated=datetime.now(timezone.utc).strftime("%a %-d %b %Y, %H:%M UTC"),
+            n_clubs=style_n,
+            profile_rows=style_profile_rows(style_ours),
+            similar_rows=style_table_rows(style_ranked[:5]),
+            dissimilar_rows=style_table_rows(list(reversed(style_ranked[-5:]))),
+            **trend_section,
+        )
+        STYLE_OUT.write_text(style_html)
+        print(f"wrote {STYLE_OUT}  ({style_n} clubs compared)")
+    else:
+        print("  ! skipped style-analysis.html - not enough division-wide data yet")
 
 
 if __name__ == "__main__":

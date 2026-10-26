@@ -213,6 +213,7 @@
     <div class="title">Match Analysis</div>
     <ul class="navlist">
       <li><button class="navitem active" data-target="season" style="--accent:#8FE388"><span class="dot"></span>Season Progress</button></li>
+      <li><button class="navitem" data-target="playstyle" style="--accent:#FF8A3D"><span class="dot"></span>Playstyle Analysis</button></li>
       <li><button class="navitem" data-target="prematch" style="--accent:#E4002B"><span class="dot"></span>Pre-Match Analysis<span class="count">{{ prematch_cards|length }}</span></button></li>
       <li><button class="navitem" data-target="postmatch" style="--accent:#2E86DE"><span class="dot"></span>Post-Match Reports<span class="count">11</span></button></li>
       <li><button class="navitem" data-target="corners" style="--accent:#FDB913"><span class="dot"></span>Set Piece Analysis<span class="count">{{ corner_cards|length }}</span></button></li>
@@ -227,6 +228,12 @@
     <section id="season" class="pane active">
       <div class="frame-wrap">
         <iframe src="reports/season-tracker.html" title="Season Tracker"></iframe>
+      </div>
+    </section>
+
+    <section id="playstyle" class="pane">
+      <div class="frame-wrap">
+        <iframe src="reports/style-analysis.html" title="Playstyle Analysis"></iframe>
       </div>
     </section>
 
