@@ -978,8 +978,18 @@ def page_coach_brief(fig, rows, team, opp, score_line, provisional=True):
     # geometry
     x0, x1 = 0.050, 0.950
     y = 0.878
-    sec_h, row_h, gap = 0.026, 0.0295, 0.004
+    sec_h, BASE_ROW_H, gap = 0.026, 0.0295, 0.004
     last_section = None
+    PTS_PER_FRAC = PAGE_H * 72
+    BASE_ROW_H_PTS = BASE_ROW_H * PTS_PER_FRAC
+    # Same ratio as report_config.py's player_table()/required_table_height()
+    # (its own _PT_PITCH_RATIO) - the measured real-glyph-vs-naive-fontsize
+    # factor line_pitch() found (~1.37x), kept as one constant's worth of
+    # drift risk rather than two independently-tuned copies.
+    PITCH_RATIO = 1.35
+    INSTR_FONTSIZE, INSTR_PITCH = 8.2, 8.2 * PITCH_RATIO
+    READOUT_FONTSIZE, READOUT_PITCH = 6.9, 6.9 * PITCH_RATIO
+    MAX_LINES = 5  # a defensive cap, not a normal-case limit - see below
 
     # One calibration per page, not per row - figure-fraction width of
     # each row's own on-page columns times the measured chars-per-
@@ -990,10 +1000,19 @@ def page_coach_brief(fig, rows, team, opp, score_line, provisional=True):
     row_w = x1 - x0
     instr_budget = (0.60 - 0.016) * row_w
     readout_budget = (0.882 - 0.62) * row_w
-    instr_cpf = _chars_per_figfrac(fig, 8.2, "bold")
+    instr_cpf = _chars_per_figfrac(fig, INSTR_FONTSIZE, "bold")
     readout_cpf = _chars_per_figfrac(fig, 7.3, "normal")
     instr_width = max(10, int(instr_budget * instr_cpf * SAFETY))
     readout_width = max(10, int(readout_budget * readout_cpf * SAFETY))
+
+    import textwrap as _tw
+
+    def _wrap_uncapped(text, width):
+        lines = _tw.wrap(str(text), width=width) or [""]
+        if len(lines) > MAX_LINES:
+            lines = lines[:MAX_LINES]
+            lines[-1] = lines[-1].rstrip() + "…"
+        return lines
 
     for r in rows:
         if r["section"] != last_section:
@@ -1008,55 +1027,84 @@ def page_coach_brief(fig, rows, team, opp, score_line, provisional=True):
             last_section = r["section"]
             y -= gap
 
+        # Rows used to be squeezed to a fixed height, truncating a longer
+        # instruction to 2 lines with "…" even though the page had plenty
+        # of blank space below - confirmed hard to read on FC Reading's
+        # report. A row now grows to whatever its own text needs (wrap
+        # uncapped, bounded only by MAX_LINES as a defensive limit no real
+        # instruction should ever reach), instead of the text being made
+        # to fit a fixed card size.
+        _instr_lines = _wrap_uncapped(r["instruction"], instr_width)
+        _readout_lines = _wrap_uncapped(r["readout"], readout_width)
+        n_instr, n_readout = len(_instr_lines), len(_readout_lines)
+        instr_h = (BASE_ROW_H if n_instr <= 1 else
+                  BASE_ROW_H + (n_instr - 1) * INSTR_PITCH / PTS_PER_FRAC)
+        readout_h = (BASE_ROW_H if n_readout <= 2 else
+                    BASE_ROW_H + (n_readout - 2) * READOUT_PITCH / PTS_PER_FRAC)
+        row_h = max(BASE_ROW_H, instr_h, readout_h)
+        row_h_pts = row_h * PTS_PER_FRAC
+
         y -= row_h
         ax = fig.add_axes([x0, y, x1 - x0, row_h]); ax.axis("off")
         ax.set_xlim(0, 1); ax.set_ylim(0, 1)
-        ax.add_patch(FancyBboxPatch((0, 0.06), 1, 0.88,
+
+        # Background box and accent bar keep the same absolute (points)
+        # margin top/bottom regardless of row height, rather than the
+        # fixed local fractions a constant-height row used - those would
+        # otherwise leave an ever-growing gap as a row gets taller.
+        box_margin = (0.06 * BASE_ROW_H_PTS) / row_h_pts
+        ax.add_patch(FancyBboxPatch((0, box_margin), 1, 1 - 2 * box_margin,
                                     boxstyle="round,pad=0,rounding_size=0.018",
                                     fc=PANEL, ec=GRID, lw=0.6,
-                                    mutation_aspect=0.10))
+                                    mutation_aspect=0.10 * (BASE_ROW_H / row_h)))
         col = VERDICT_C[r["verdict"]]
-        ax.add_patch(Rectangle((0, 0.10), 0.006, 0.80, fc=col, ec="none"))
+        bar_margin = (0.10 * BASE_ROW_H_PTS) / row_h_pts
+        ax.add_patch(Rectangle((0, bar_margin), 0.006, 1 - 2 * bar_margin,
+                               fc=col, ec="none"))
 
-        # Wrap defensively: a coach's free-text instruction varies a lot in
-        # length brief to brief, and an unwrapped long one used to run
-        # straight across the readout column and verdict chip - on one
-        # FC Reading check it ran clean off the page's right edge.
-        # instr_width is calibrated against this render's actual font
-        # above, not a fixed guess - see _chars_per_figfrac()'s docstring
-        # for why a hardcoded width isn't safe here.
-        import textwrap as _tw
-        _instr_all = _tw.wrap(str(r["instruction"]), width=instr_width)
-        _instr_lines = _instr_all[:2]
-        if len(_instr_all) > 2:
-            _instr_lines[-1] = _instr_lines[-1].rstrip() + "…"
-        if len(_instr_lines) > 1:
-            ax.text(0.016, 0.74, _instr_lines[0], ha="left", va="center",
-                    color=INK, fontsize=8.2, weight="bold")
-            ax.text(0.016, 0.54, _instr_lines[1], ha="left", va="center",
-                    color=INK, fontsize=8.2, weight="bold")
-        else:
+        # Instruction: topmost line anchored the same points-from-top as
+        # the original single-line position, each further line stepping
+        # down by the font's own natural line pitch (line_pitch()'s
+        # measured ~1.35x factor, same constant player_table() uses).
+        if n_instr == 1:
             ax.text(0.016, 0.66, _instr_lines[0], ha="left", va="center",
-                    color=INK, fontsize=8.2, weight="bold")
-        ax.text(0.016, 0.28, r["metric"], ha="left", va="center", color=MUTED,
-                fontsize=6.6)
-        # Readout strings vary a lot in length brief to brief too, and an
-        # unwrapped long one used to run straight into the verdict chip at
-        # x=0.882 - same calibrated-width approach as the instruction above.
-        _lines = _tw.wrap(str(r["readout"]), width=readout_width)[:2]
-        if len(_lines) > 1:
-            ax.text(0.62, 0.62, _lines[0], ha="left", va="center",
-                    color="#C6D2E0", fontsize=6.9)
-            ax.text(0.62, 0.36, _lines[1], ha="left", va="center",
-                    color="#C6D2E0", fontsize=6.9)
+                    color=INK, fontsize=INSTR_FONTSIZE, weight="bold")
         else:
-            ax.text(0.62, 0.5, r["readout"], ha="left", va="center",
-                    color="#C6D2E0", fontsize=7.6)
+            top_y = 1 - (0.34 * BASE_ROW_H_PTS) / row_h_pts
+            for i, line in enumerate(_instr_lines):
+                ax.text(0.016, top_y - i * (INSTR_PITCH / row_h_pts), line,
+                        ha="left", va="center", color=INK,
+                        fontsize=INSTR_FONTSIZE, weight="bold")
 
-        # verdict chip
-        ax.add_patch(FancyBboxPatch((0.882, 0.24), 0.106, 0.52,
+        metric_y = (0.28 * BASE_ROW_H_PTS) / row_h_pts
+        ax.text(0.016, metric_y, r["metric"], ha="left", va="center",
+                color=MUTED, fontsize=6.6)
+
+        # Readout: same top-anchored stacking once it needs more than the
+        # 2 lines a row already comfortably holds.
+        if n_readout == 1:
+            ax.text(0.62, 0.5, _readout_lines[0], ha="left", va="center",
+                    color="#C6D2E0", fontsize=7.6)
+        elif n_readout == 2 and row_h <= BASE_ROW_H + 1e-9:
+            ax.text(0.62, 0.62, _readout_lines[0], ha="left", va="center",
+                    color="#C6D2E0", fontsize=READOUT_FONTSIZE)
+            ax.text(0.62, 0.36, _readout_lines[1], ha="left", va="center",
+                    color="#C6D2E0", fontsize=READOUT_FONTSIZE)
+        else:
+            top_y = 1 - (0.38 * BASE_ROW_H_PTS) / row_h_pts
+            for i, line in enumerate(_readout_lines):
+                ax.text(0.62, top_y - i * (READOUT_PITCH / row_h_pts), line,
+                        ha="left", va="center", color="#C6D2E0",
+                        fontsize=READOUT_FONTSIZE)
+
+        # Verdict chip: constant absolute size, vertically centred in
+        # whatever the row's actual height ends up being, rather than
+        # stretching taller on a multi-line row.
+        chip_h = (0.52 * BASE_ROW_H_PTS) / row_h_pts
+        ax.add_patch(FancyBboxPatch((0.882, 0.5 - chip_h / 2), 0.106, chip_h,
                                     boxstyle="round,pad=0,rounding_size=0.03",
-                                    fc=col, ec="none", mutation_aspect=0.18))
+                                    fc=col, ec="none",
+                                    mutation_aspect=0.18 * (BASE_ROW_H / row_h)))
         ax.text(0.935, 0.5, VERDICT_LABEL[r["verdict"]], ha="center", va="center",
                 color="#10161F", fontsize=6.4, weight="bold")
         y -= gap
