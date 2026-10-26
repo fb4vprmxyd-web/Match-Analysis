@@ -1,10 +1,12 @@
-"""Runs run.py and build_upcoming.py automatically, twice a week - Monday
-and Thursday, to catch the weekend's games and the midweek round
-respectively. run.py rebuilds the match just played; build_upcoming.py
-then does the same job in the other direction, filling in a pre-match +
-set piece report for whatever fixture is next if nothing exists for it yet
-(see that module's docstring for how it avoids overwriting a coach's own
-/selector choice).
+"""Runs run.py, build_upcoming.py, and build_season.py automatically, twice
+a week - Monday and Thursday, to catch the weekend's games and the
+midweek round respectively. run.py rebuilds the match just played;
+build_upcoming.py then does the same job in the other direction, filling
+in a pre-match + set piece report for whatever fixture is next if nothing
+exists for it yet (see that module's docstring for how it avoids
+overwriting a coach's own /selector choice); build_season.py refreshes the
+Playstyle Analysis and Season Progress pages from the same newly-pulled
+match data, last so it always reflects whatever run.py just added.
 
     python3 scheduler.py
 
@@ -52,6 +54,10 @@ def main():
             print(f"=== {now.isoformat()} triggering build_upcoming.py ===", flush=True)
             result = subprocess.run([sys.executable, "build_upcoming.py"])
             print(f"build_upcoming.py exited {result.returncode}", flush=True)
+
+            print(f"=== {now.isoformat()} triggering build_season.py ===", flush=True)
+            result = subprocess.run([sys.executable, "build_season.py"])
+            print(f"build_season.py exited {result.returncode}", flush=True)
 
             last_run_date = now.date()
         time.sleep(CHECK_INTERVAL_SECONDS)
