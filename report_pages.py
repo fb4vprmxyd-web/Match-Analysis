@@ -942,6 +942,24 @@ VERDICT_LABEL = {"GREEN": "MET", "AMBER": "MARGINAL", "RED": "MISSED",
                  "INFO": "NOTED", "N/A": "NO DATA"}
 
 
+def _chars_per_figfrac(fig, fontsize, weight):
+    """Characters-per-figure-fraction-width for one fontsize/weight,
+    measured against whatever font is ACTUALLY active at render time -
+    not a fixed guess. Avenir Next (local dev) and DejaVu Sans (the
+    deployed container - no Avenir Next licence available there) render
+    noticeably different widths per character; a wrap width tuned by eye
+    on one silently overflowed on the other, confirmed on a live FC
+    Reading report where a wrapped instruction still overlapped the
+    readout column in production despite rendering correctly locally.
+    Pangram probe text for a representative letter mix."""
+    probe = "The quick brown fox jumps over the lazy dog and keeps moving past the hill"
+    t = fig.text(0, 0, probe, fontsize=fontsize, weight=weight)
+    fig.canvas.draw()
+    w_frac = t.get_window_extent(fig.canvas.get_renderer()).width / fig.bbox.width
+    t.remove()
+    return len(probe) / w_frac
+
+
 def page_coach_brief(fig, rows, team, opp, score_line, provisional=True):
     """Grades the match against the coaching staff's pre-match instructions."""
     _title(fig, "COACH'S BRIEF", y=0.960, size=30)
@@ -962,6 +980,20 @@ def page_coach_brief(fig, rows, team, opp, score_line, provisional=True):
     y = 0.878
     sec_h, row_h, gap = 0.026, 0.0295, 0.004
     last_section = None
+
+    # One calibration per page, not per row - figure-fraction width of
+    # each row's own on-page columns times the measured chars-per-
+    # fraction gives a safe wrap width for THIS render's actual font.
+    # SAFETY shaves a further margin off the measured fit since the probe
+    # string is one sample, not every possible letter mix.
+    SAFETY = 0.92
+    row_w = x1 - x0
+    instr_budget = (0.60 - 0.016) * row_w
+    readout_budget = (0.882 - 0.62) * row_w
+    instr_cpf = _chars_per_figfrac(fig, 8.2, "bold")
+    readout_cpf = _chars_per_figfrac(fig, 7.3, "normal")
+    instr_width = max(10, int(instr_budget * instr_cpf * SAFETY))
+    readout_width = max(10, int(readout_budget * readout_cpf * SAFETY))
 
     for r in rows:
         if r["section"] != last_section:
@@ -989,13 +1021,12 @@ def page_coach_brief(fig, rows, team, opp, score_line, provisional=True):
         # Wrap defensively: a coach's free-text instruction varies a lot in
         # length brief to brief, and an unwrapped long one used to run
         # straight across the readout column and verdict chip - on one
-        # FC Reading check it ran clean off the page's right edge. Width=95
-        # is measured (not guessed): at this column's real figure-fraction
-        # width and this exact fontsize/weight, every real instruction
-        # tried wrapped at ~85-90% of the available budget - see the
-        # measurement in this fix's commit if that budget ever changes.
+        # FC Reading check it ran clean off the page's right edge.
+        # instr_width is calibrated against this render's actual font
+        # above, not a fixed guess - see _chars_per_figfrac()'s docstring
+        # for why a hardcoded width isn't safe here.
         import textwrap as _tw
-        _instr_all = _tw.wrap(str(r["instruction"]), width=95)
+        _instr_all = _tw.wrap(str(r["instruction"]), width=instr_width)
         _instr_lines = _instr_all[:2]
         if len(_instr_all) > 2:
             _instr_lines[-1] = _instr_lines[-1].rstrip() + "…"
@@ -1011,8 +1042,8 @@ def page_coach_brief(fig, rows, team, opp, score_line, provisional=True):
                 fontsize=6.6)
         # Readout strings vary a lot in length brief to brief too, and an
         # unwrapped long one used to run straight into the verdict chip at
-        # x=0.882.
-        _lines = _tw.wrap(str(r["readout"]), width=44)[:2]
+        # x=0.882 - same calibrated-width approach as the instruction above.
+        _lines = _tw.wrap(str(r["readout"]), width=readout_width)[:2]
         if len(_lines) > 1:
             ax.text(0.62, 0.62, _lines[0], ha="left", va="center",
                     color="#C6D2E0", fontsize=6.9)
