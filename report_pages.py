@@ -11,7 +11,8 @@ from matplotlib.lines import Line2D
 from report_config import (BG, PANEL, INK, MUTED, GRID, TEAM_C, OPP_C, GOOD, BAD,
                            BARC, PAGE_W, PAGE_H, FONT, draw_pitch, style_bar_axis,
                            surname, contrast_ink, PITCH_X, PITCH_Y,
-                           player_table, stat_table, line_pitch)
+                           player_table, stat_table, line_pitch,
+                           required_table_height)
 import report_metrics as M
 
 
@@ -532,8 +533,7 @@ def page_player_stats_b(fig, tbl, bench=None, mins=None, full=None):
         fig.text(rect[0], rect[1] + rect[3] + 0.014, text, ha="left",
                  va="center", color=INK, fontsize=10, weight="bold")
 
-    def plain_table(rect, col, label, fmt="{:.1f}", ascending=False, bkey=None):
-        label_above(rect, label)
+    def _plain(col, label, fmt="{:.1f}", ascending=False, bkey=None):
         d = tbl[["playerName", col]].copy()
         d = d[d[col].notna()]
         d = d[d[col] != 0] if col in ("BPDR", "xG") else d
@@ -549,10 +549,9 @@ def page_player_stats_b(fig, tbl, bench=None, mins=None, full=None):
             rows.append(tuple(row))
         if has_bench:
             cols = cols + ["Season median"]
-        player_table(fig, rect, rows, cols)
+        return label, cols, rows
 
-    def duel_table(rect, won, lost, label, bkey):
-        label_above(rect, label)
+    def _duel(won, lost, label, bkey):
         d = tbl[["playerName", won, lost]].copy()
         d["tot"] = d[won] + d[lost]
         d = d[d.tot > 0].sort_values("tot", ascending=False)
@@ -567,10 +566,9 @@ def page_player_stats_b(fig, tbl, bench=None, mins=None, full=None):
             rows.append(tuple(row))
         if has_bench:
             cols = cols + ["Median"]
-        player_table(fig, rect, rows, cols)
+        return label, cols, rows
 
-    def passes_table(rect):
-        label_above(rect, "Passes")
+    def _passes():
         d = tbl[["playerName", "succ", "unsucc"]].copy()
         d["tot"] = d.succ + d.unsucc
         d = d[d.tot > 0].sort_values("tot", ascending=False)
@@ -585,21 +583,59 @@ def page_player_stats_b(fig, tbl, bench=None, mins=None, full=None):
             rows.append(tuple(row))
         if has_bench:
             cols = cols + ["Median"]
-        player_table(fig, rect, rows, cols)
+        return "Passes", cols, rows
 
-    L, R, W, H = 0.075, 0.560, 0.385, 0.122
-    ys = [0.780, 0.598, 0.416, 0.234, 0.052]
+    # Five row-pairs, left/right. Row height used to be a fixed 0.122
+    # regardless of roster size, which forced a 7-player table (e.g. xG -
+    # not everyone shoots) and a 16-player one (Passes - almost everyone
+    # does) into the identical box: the sparse side rendered with wasted
+    # blank space while the dense side got squeezed toward the readability
+    # floor. Confirmed cramped on several real matches this season (FC
+    # Walsall, Plymouth, Barnsley, Wigan, Luton, Oxford all had a 16-row
+    # Passes or Pressures table). Sizing each row to its own actual max
+    # roster count via required_table_height() fixes that without
+    # affecting pages that were already fine.
+    specs = [
+        (_plain("BPD", "BPD"), _plain("BPDR", "BPDR")),
+        (_plain("xT", "xT", fmt="{:.2f}"), _plain("xG", "xG", fmt="{:.2f}")),
+        (_passes(), _duel("aw", "al", "Aerial Duels", "aerials")),
+        (_duel("gw", "gl", "Ground Duels", "grounds"),
+         _plain("BLRT", "BLRT", fmt="{:.1f}", ascending=True)),
+        (_plain("pressures", "Pressures", fmt="{:.0f}"),
+         _plain("recoveries", "Ball Recoveries", fmt="{:.0f}")),
+    ]
 
-    plain_table([L, ys[0], W, H], "BPD", "BPD")
-    plain_table([R, ys[0], W, H], "BPDR", "BPDR")
-    plain_table([L, ys[1], W, H], "xT", "xT", fmt="{:.2f}")
-    plain_table([R, ys[1], W, H], "xG", "xG", fmt="{:.2f}")
-    passes_table([L, ys[2], W, H])
-    duel_table([R, ys[2], W, H], "aw", "al", "Aerial Duels", "aerials")
-    duel_table([L, ys[3], W, H], "gw", "gl", "Ground Duels", "grounds")
-    plain_table([R, ys[3], W, H], "BLRT", "BLRT", fmt="{:.1f}", ascending=True)
-    plain_table([L, ys[4], W, H], "pressures", "Pressures", fmt="{:.0f}")
-    plain_table([R, ys[4], W, H], "recoveries", "Ball Recoveries", fmt="{:.0f}")
+    L, R, W = 0.075, 0.560, 0.385
+    TOP_Y, BOTTOM_Y, GAP = 0.900, 0.045, 0.040
+    MIN_H, MAX_H = 0.075, 0.175
+    TARGET_FONTSIZE = 7.2
+
+    heights = []
+    for left, right in specs:
+        h = max(required_table_height(len(left[2]), TARGET_FONTSIZE),
+               required_table_height(len(right[2]), TARGET_FONTSIZE))
+        heights.append(min(MAX_H, max(MIN_H, h)))
+
+    # Graceful degradation rather than a hard floor: if every row happened
+    # to need the maximum at once (every table a full ~16-player roster),
+    # scale every row down by the same factor so the grid still ends
+    # exactly at BOTTOM_Y instead of running off the page - this is the
+    # only path that can still produce a small font, and even then every
+    # table shrinks together rather than one arbitrarily cramped table
+    # next to others left untouched.
+    budget = TOP_Y - BOTTOM_Y - GAP * (len(specs) - 1)
+    total = sum(heights)
+    if total > budget:
+        heights = [h * (budget / total) for h in heights]
+
+    y = TOP_Y
+    for (left, right), h in zip(specs, heights):
+        y -= h
+        for x, (label, cols, rows) in ((L, left), (R, right)):
+            rect = [x, y, W, h]
+            label_above(rect, label)
+            player_table(fig, rect, rows, cols)
+        y -= GAP
 
 
 # ========================================================== set-piece page
@@ -950,14 +986,32 @@ def page_coach_brief(fig, rows, team, opp, score_line, provisional=True):
         col = VERDICT_C[r["verdict"]]
         ax.add_patch(Rectangle((0, 0.10), 0.006, 0.80, fc=col, ec="none"))
 
-        ax.text(0.016, 0.66, r["instruction"], ha="left", va="center", color=INK,
-                fontsize=8.2, weight="bold")
+        # Wrap defensively: a coach's free-text instruction varies a lot in
+        # length brief to brief, and an unwrapped long one used to run
+        # straight across the readout column and verdict chip - on one
+        # FC Reading check it ran clean off the page's right edge. Width=95
+        # is measured (not guessed): at this column's real figure-fraction
+        # width and this exact fontsize/weight, every real instruction
+        # tried wrapped at ~85-90% of the available budget - see the
+        # measurement in this fix's commit if that budget ever changes.
+        import textwrap as _tw
+        _instr_all = _tw.wrap(str(r["instruction"]), width=95)
+        _instr_lines = _instr_all[:2]
+        if len(_instr_all) > 2:
+            _instr_lines[-1] = _instr_lines[-1].rstrip() + "…"
+        if len(_instr_lines) > 1:
+            ax.text(0.016, 0.74, _instr_lines[0], ha="left", va="center",
+                    color=INK, fontsize=8.2, weight="bold")
+            ax.text(0.016, 0.54, _instr_lines[1], ha="left", va="center",
+                    color=INK, fontsize=8.2, weight="bold")
+        else:
+            ax.text(0.016, 0.66, _instr_lines[0], ha="left", va="center",
+                    color=INK, fontsize=8.2, weight="bold")
         ax.text(0.016, 0.28, r["metric"], ha="left", va="center", color=MUTED,
                 fontsize=6.6)
-        # Wrap defensively: readout strings vary a lot in length brief to
-        # brief, and an unwrapped long one used to run straight into the
-        # verdict chip at x=0.882.
-        import textwrap as _tw
+        # Readout strings vary a lot in length brief to brief too, and an
+        # unwrapped long one used to run straight into the verdict chip at
+        # x=0.882.
         _lines = _tw.wrap(str(r["readout"]), width=44)[:2]
         if len(_lines) > 1:
             ax.text(0.62, 0.62, _lines[0], ha="left", va="center",

@@ -222,6 +222,36 @@ def line_pitch(fig, fontsize, linespacing):
     return (bbox.height / fig.bbox.height) / 2
 
 
+# player_table()'s own internal geometry, pulled out to module level so
+# required_table_height() can invert the exact same formula rather than a
+# second hand-tuned copy that could silently drift out of sync with it.
+_PT_HEADER_OFFSET = 0.115   # local-axes fraction used only when header= is given
+_PT_COLHEAD_OFFSET = 0.058  # column-label row + divider, always subtracted
+_PT_MAX_FONTSIZE = 8.8
+_PT_MIN_FONTSIZE = 5.8
+_PT_PITCH_RATIO = 1.35      # matches line_pitch()'s own measured ~1.37x factor -
+                            # real glyph line-height versus the naive fontsize
+                            # product; going tighter than this is what used to
+                            # let adjacent rows' text actually touch.
+
+
+def required_table_height(n, target_fontsize=7.2, header=False):
+    """Inverse of player_table()'s own row-height formula: the figure-
+    fraction rect height an n-row table needs for every row to render at
+    `target_fontsize` instead of being squeezed toward the readability
+    floor. Used by page_player_stats_b() to size each row of its grid to
+    what its actual roster count needs, rather than forcing every table -
+    a 7-player list and a 16-player one alike - into the same fixed box
+    (confirmed cramping real matches: FC Walsall/Plymouth/Barnsley/Wigan/
+    Luton/Oxford all had a 16-row Passes or Pressures table this season,
+    squeezed to the 5.8pt floor under the old fixed-height grid)."""
+    n = max(n, 1)
+    top = 1.0 - (_PT_HEADER_OFFSET if header else 0.0) - _PT_COLHEAD_OFFSET
+    row_h_local = top / n
+    row_h_pts_target = target_fontsize * _PT_PITCH_RATIO
+    return row_h_pts_target / (row_h_local * PAGE_H * 72)
+
+
 def player_table(fig, rect, rows, col_labels, header=None):
     """Same picture-style row/divider table as stat_table(), for a list of
     players rather than a two-team comparison. `rows` is a list of tuples
@@ -234,23 +264,25 @@ def player_table(fig, rect, rows, col_labels, header=None):
     if header:
         ax.text(0, top, header, ha="left", va="top", color=INK,
                 fontsize=13, weight="bold")
-        top -= 0.115
+        top -= _PT_HEADER_OFFSET
     ncols = len(col_labels)
     col_x = [0.0] + [1.0 - (ncols - 1 - i) * (0.62 / max(ncols - 1, 1))
                      for i in range(1, ncols)]
     for j, lab in enumerate(col_labels):
         ax.text(col_x[j], top, lab, ha=("left" if j == 0 else "right"),
                 va="top", color=MUTED, fontsize=8.2, weight="bold")
-    top -= 0.058
+    top -= _PT_COLHEAD_OFFSET
     ax.plot([0, 1], [top, top], color=GRID, lw=1.0)
     n = len(rows) or 1
     row_h = top / n
-    # 8.8pt assumed roughly a dozen rows fit the rect (true for most panels).
     # A longer roster - every player who touched the ball in a given role -
     # shrinks the font to fit instead of stacking rows closer than the text
-    # itself is tall, which is what was overlapping adjacent rows.
+    # itself is tall, which is what was overlapping adjacent rows. Callers
+    # with widely varying roster sizes (page_player_stats_b) should size
+    # `rect` itself via required_table_height() first so this floor is
+    # rarely the thing actually doing the work.
     row_h_pts = row_h * rect[3] * PAGE_H * 72
-    fontsize = min(8.8, max(5.8, row_h_pts / 1.35))
+    fontsize = min(_PT_MAX_FONTSIZE, max(_PT_MIN_FONTSIZE, row_h_pts / _PT_PITCH_RATIO))
     for i, row in enumerate(rows):
         y = top - (i + 0.5) * row_h
         if i % 2 == 1:
