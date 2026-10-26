@@ -953,10 +953,6 @@ STYLE_PAGE = """<!DOCTYPE html>
 
 </main>
 
-<footer>
-  Local page — open style-analysis.html directly in a browser. Nothing here is published or hosted.
-</footer>
-
 </body>
 </html>
 """
