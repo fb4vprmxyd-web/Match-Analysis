@@ -395,6 +395,75 @@ def season_trends(log, team, table=None, opp_ppda=None):
     )
 
 
+# Impect's own "Frequency" / "Total performance" phase-of-play panels tag
+# 6 phases; this project's cached event data (ev.parquet's own `phase`
+# column) only ever carries these 4 - confirmed across several matches,
+# OUT_OF_POSSESSION and DEFENSIVE_TRANSITION aren't tagged on any event at
+# all here. Rather than approximate the missing two from the opponent's
+# own events in the same match (tried it - plausible-looking numbers, but
+# unverified against Impect's own methodology and only covers ~75-85% of
+# match time), this replicates the 4 phases the data actually supports.
+PHASE_ORDER = ["IN_POSSESSION", "ATTACKING_TRANSITION", "SECOND_BALL", "SET_PIECE"]
+PHASE_LABELS = {
+    "IN_POSSESSION": "In Possession",
+    "ATTACKING_TRANSITION": "Attacking Transition",
+    "SECOND_BALL": "Second Ball",
+    "SET_PIECE": "Set Piece",
+}
+
+
+def phase_breakdown(log, team):
+    """Orient's own season-wide split across the 4 tagged phases: Frequency
+    (share of on-ball event time) and Total Performance (share of
+    shot-based xG) - Impect's own two panels, same per-event `phase` and
+    `SHOT_XG` fields already used elsewhere in this project (cross-checked
+    directly: summing SHOT_XG by phase from ev.parquet reproduces the same
+    match-level total ss.parquet's own matchsum reports, to 5 decimal
+    places). League matches only, same scope as every other season-wide
+    trend on this page."""
+    dur = {p: 0.0 for p in PHASE_ORDER}
+    xg = {p: 0.0 for p in PHASE_ORDER}
+    for m in log:
+        if m["is_cup"] or not m["cache"]:
+            continue
+        f = m["cache"] / "ev.parquet"
+        if not f.exists():
+            continue
+        try:
+            ev = pd.read_parquet(f, columns=["squadName", "phase", "duration", "SHOT_XG"])
+        except Exception:
+            continue
+        d = ev[ev.squadName == team]
+        for p, v in d.groupby("phase").duration.sum().items():
+            if p in dur:
+                dur[p] += float(v)
+        for p, v in d.groupby("phase").SHOT_XG.sum().items():
+            if p in xg:
+                xg[p] += float(v)
+
+    dur_total = sum(dur.values())
+    xg_total = sum(xg.values())
+    if dur_total <= 0:
+        return []
+    return [
+        dict(key=p, label=PHASE_LABELS[p],
+            freq_pct=dur[p] / dur_total * 100,
+            perf_pct=(xg[p] / xg_total * 100) if xg_total > 0 else 0.0)
+        for p in PHASE_ORDER
+    ]
+
+
+def phase_cards(rows, key):
+    cards = []
+    for r in rows:
+        cards.append(f'''
+      <div class="stat">
+        <div class="n">{r[key]:.0f}%</div>
+        <div class="l">{html.escape(r["label"])}</div>
+      </div>''')
+    return "".join(cards)
+
+
 def league_table(div_matches, team):
     """Full division standings, computed from raw results - won't reflect an
     external points deduction, since Impect doesn't encode that."""
@@ -440,6 +509,33 @@ PERCENTILE_METRICS = [
     # instead (see fetch_data.py's ss.parquet pull), so this needs its own
     # fetch rather than riding along with the metrics above.
     ("SHOT_AT_GOAL_NUMBER", "Shots", True, "{:.1f}", "matchsums"),
+    # Impect's own "Offensive (with Ball)" KPI panel, replicated alongside
+    # the metrics above rather than replacing them.
+    ("BYPASSED_DEFENDERS", "Bypassed Defenders", True, "{:.0f}", "matchsums"),
+    ("BYPASSED_OPPONENTS", "Bypassed Opponents", True, "{:.0f}", "matchsums"),
+    # Direction is a judgment call, not confirmed against an Impect
+    # definition: treated as lower-better on the read that less backward/
+    # sideways ball retention under pressure means more purposeful forward
+    # progression - worth revisiting if that assumption turns out wrong.
+    ("RATIO_REVERSE_PLAY", "Reverse Play Ratio", False, "{:.0%}", "scores"),
+    # Impect's dashboard calls this "Ratio - add opponents (without
+    # shots)" - RATIO_ADDED_OPPONENTS is the closest field getSquadMatchScores
+    # exposes; no shots-excluded variant is available here, so this is an
+    # approximation of that specific KPI, not an exact match.
+    ("RATIO_ADDED_OPPONENTS", "Ball Control Ratio", True, "{:.0%}", "scores"),
+    ("CRITICAL_BALL_LOSS_NUMBER", "Critical Ball Losses", False, "{:.0f}", "matchsums"),
+    # Lower-better, not higher: this counts a side's OWN teammates stranded
+    # out of position by their OWN ball losses - confirmed against Impect's
+    # dashboard directly (Orient's value, 113, ranks 2nd there; only a
+    # lower-is-better reading reproduces that from this project's data).
+    ("BALL_LOSS_REMOVED_TEAMMATES", "Ball Loss Removed Teammates", False, "{:.0f}", "matchsums"),
+    # Computed, not a raw Impect field: Impect's own "Efficiency Build-up"
+    # KPI is exactly this ratio (bypassed opponents per teammate removed by
+    # a ball loss). Both components are already pulled above via
+    # "matchsums", so this rides along rather than needing a third fetch -
+    # see league_percentiles()'s source=="computed" branch.
+    (("BYPASSED_OPPONENTS", "BALL_LOSS_REMOVED_TEAMMATES"), "Build-Up Efficiency",
+     True, "{:.1f}", "computed"),
 ]
 
 
@@ -454,9 +550,13 @@ def league_percentiles(api, div_matches, team):
     ids = [int(i) for i in div_matches.id.tolist()]
 
     # Group metrics by which endpoint they come from, so each endpoint is
-    # fetched once regardless of how many metrics it covers.
+    # fetched once regardless of how many metrics it covers. "computed"
+    # entries need no fetch of their own - both halves of the ratio are
+    # already covered by their own ordinary entries above.
     by_source = {}
     for col, _, _, _, source in PERCENTILE_METRICS:
+        if source == "computed":
+            continue
         by_source.setdefault(source, []).append(col)
     fetchers = {"scores": api.getSquadMatchScores, "matchsums": api.getSquadMatchsums}
 
@@ -472,10 +572,17 @@ def league_percentiles(api, div_matches, team):
 
     rows = []
     for col, label, higher_better, fmt, source in PERCENTILE_METRICS:
-        a = agg.get(source)
-        if a is None or col not in a.columns:
-            continue
-        vals = a[col].dropna()
+        if source == "computed":
+            num_col, den_col = col
+            a = agg.get("matchsums")
+            if a is None or num_col not in a.columns or den_col not in a.columns:
+                continue
+            vals = (a[num_col] / a[den_col].replace(0, pd.NA)).dropna()
+        else:
+            a = agg.get(source)
+            if a is None or col not in a.columns:
+                continue
+            vals = a[col].dropna()
         if team not in vals.index or len(vals) < 2:
             continue
         us = vals[team]
@@ -1183,6 +1290,15 @@ PAGE = """<!DOCTYPE html>
     <p class="desc">Orient's season-to-date average against every other League One squad's season-to-date average,
        same matches as the table above. Doesn't cover set-piece threat specifically - that would need its own pull.</p>
     <div class="pctl-panel">{pctl_rows}</div>
+
+    <p class="desc" style="margin-top:28px;">How often Orient was in each phase of play this season, and how much
+       of its shot-based xG came from each - league matches only. Impect's own equivalent view also covers
+       Out of Possession and Defensive Transition; those two aren't tagged on any event in this project's pulled
+       match data, so are left out here rather than estimated.</p>
+    <p class="mut" style="font-size:11px; text-transform:uppercase; letter-spacing:0.06em; margin:0 0 8px;">Frequency — share of on-ball time</p>
+    <div class="cards">{freq_cards}</div>
+    <p class="mut" style="font-size:11px; text-transform:uppercase; letter-spacing:0.06em; margin:18px 0 8px;">Total Performance — share of shot-based xG</p>
+    <div class="cards">{perf_cards}</div>
   </section>
 
   <section>
@@ -1268,6 +1384,7 @@ def main():
     div_api, div_matches = division_matches(fb_row, apis)
     table = league_table(div_matches, team)
     pcts = league_percentiles(div_api, div_matches, team)
+    phase_rows_data = phase_breakdown(log, team)
     style_ranked, style_ours, style_n = style_similarity(div_api, div_matches, team)
     opp_ppda = {r["opponent"]: r["PPDA"] for r in style_ranked if "PPDA" in r}
     trends = season_trends(log, team, table=table, opp_ppda=opp_ppda)
@@ -1298,6 +1415,8 @@ def main():
                         if extras["missing"] else ""),
         table_rows=league_table_rows(table, team) if len(table) else '<tr><td colspan="10" class="mut">Could not load the division table.</td></tr>',
         pctl_rows=percentile_rows(pcts) if pcts else '<p class="mut" style="padding:14px 0;">Could not load division-wide squad scores.</p>',
+        freq_cards=phase_cards(phase_rows_data, "freq_pct") if phase_rows_data else '<p class="mut" style="padding:14px 0;">Not enough cached match data yet.</p>',
+        perf_cards=phase_cards(phase_rows_data, "perf_pct") if phase_rows_data else "",
         n_upcoming=len(upcoming), up_plural="" if len(upcoming) == 1 else "es",
         upcoming_rows=upcoming_rows(upcoming) if upcoming else '<tr><td colspan="5" class="mut">No upcoming fixtures scheduled.</td></tr>',
         pending_note=pending_note(pending),
