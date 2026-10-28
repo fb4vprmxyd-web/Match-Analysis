@@ -141,15 +141,23 @@ def division_matches(fb_row, apis):
 # teams by table position instead of by how they actually play.
 STYLE_METRICS = [
     ("RATIO_BALL_POSSESSION", "Possession", "{:.0%}"),
-    ("FIELD_TILT", "Field Tilt", "{:.0%}"),
     ("PPDA", "Pressing Intensity (PPDA)", "{:.1f}"),
     ("MEAN_PRESSURE_HEIGHT", "Press Height", "{:.0f}m"),
     ("RATIO_PASSING_ACCURACY", "Passing Accuracy", "{:.0%}"),
     ("PXT_POSITIVE", "Attacking Threat (xT)", "{:.2f}"),
     ("PRESSURE_DURING_OPP_BUILD_UP_PERCENT", "Press Opponent Build-Up", "{:.0%}"),
     ("OPP_OPENING_BALLS_PRESSED_PERCENT", "Press Opening Balls", "{:.0%}"),
-    ("PRESSURE_OPP_GK_PERCENT", "Press Goalkeeper", "{:.0%}"),
     ("FORCED_HIGH_PASSES_PERCENT", "Force Long/High Passes", "{:.0%}"),
+    # Both from getSquadMatchsums (style_similarity()'s second pull below),
+    # not getSquadMatchScores like everything above - the only place this
+    # project pulls raw BYPASSED_DEFENDERS/BYPASSED_OPPONENTS alongside
+    # each other rather than at the pre-aggregated ratio level. Genuinely
+    # different metrics despite the similar names: BYPASSED_OPPONENTS
+    # counts the full outfield picture (defenders + midfielders caught out
+    # of position), BYPASSED_DEFENDERS only the back line - confirmed on
+    # real match data, ~5.5x apart for the same team/match.
+    ("BYPASSED_DEFENDERS", "Bypassed Defenders", "{:.1f}"),
+    ("BYPASSED_OPPONENTS", "Bypassed Opponents", "{:.1f}"),
 ]
 
 
@@ -173,12 +181,25 @@ def style_similarity(api, div_matches, team):
         sc = api.getSquadMatchScores(matches=ids)
     except Exception:
         return [], {}, 0
+    # BYPASSED_DEFENDERS/BYPASSED_OPPONENTS aren't in getSquadMatchScores -
+    # a second, equally lightweight squad-level pull (not per-match event
+    # data - still one call for the whole division, ~40s for 143 matches)
+    # rather than folding them into the same frame as the ratio metrics.
+    try:
+        sm = api.getSquadMatchsums(matches=ids)
+    except Exception:
+        sm = None
 
     cols = [c for c, *_ in STYLE_METRICS]
-    present = [c for c in cols if c in sc.columns]
+    sc_cols = [c for c in cols if c in sc.columns]
+    sm_cols = [c for c in cols if sm is not None and c in sm.columns and c not in sc_cols]
+    present = sc_cols + sm_cols
     if not present:
         return [], {}, 0
-    agg = sc.groupby("squadName")[present].mean().dropna()
+    agg = sc.groupby("squadName")[sc_cols].mean()
+    if sm_cols:
+        agg = agg.join(sm.groupby("squadName")[sm_cols].mean(), how="outer")
+    agg = agg.dropna()
     if team not in agg.index or len(agg) < 3:
         return [], {}, 0
 
@@ -197,7 +218,19 @@ def style_similarity(api, div_matches, team):
     return ranked, our_values, len(agg)
 
 
-TREND_COLS = ["PPDA", "MEAN_PRESSURE_HEIGHT", "RATIO_BALL_POSSESSION", "FIELD_TILT", "PXT_POSITIVE"]
+# Own label/format definitions, deliberately not reused from STYLE_METRICS -
+# the "Recent Form" trend below still wants Field Tilt even though the Style
+# Profile comparison above no longer does, and the two have been free to
+# diverge since the Style Profile page is a comparison against the rest of
+# the division while this is Orient's own trend against its own season.
+TREND_METRICS = [
+    ("PPDA", "Pressing Intensity (PPDA)", "{:.1f}"),
+    ("MEAN_PRESSURE_HEIGHT", "Press Height", "{:.0f}m"),
+    ("RATIO_BALL_POSSESSION", "Possession", "{:.0%}"),
+    ("FIELD_TILT", "Field Tilt", "{:.0%}"),
+    ("PXT_POSITIVE", "Attacking Threat (xT)", "{:.2f}"),
+]
+TREND_COLS = [c for c, _, _ in TREND_METRICS]
 
 
 def season_trends(log, team, table=None, opp_ppda=None):
@@ -323,7 +356,7 @@ def season_trends(log, team, table=None, opp_ppda=None):
         return float(vals.mean()) if len(vals) else None
 
     trend = []
-    label_fmt = {c: (l, f) for c, l, f in STYLE_METRICS}
+    label_fmt = {c: (l, f) for c, l, f in TREND_METRICS}
     for col in TREND_COLS:
         season_v, last5_v = _avg(df, col), _avg(last5, col)
         if season_v is None or last5_v is None or col not in label_fmt:
