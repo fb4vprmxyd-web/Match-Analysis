@@ -141,7 +141,16 @@ services:
     # every interface *inside* the container, same reasoning as any
     # container - its own loopback isn't reachable from outside it either
     # way, published port or Docker network.
-    command: ["gunicorn", "--bind", "0.0.0.0:5050", "--workers", "3",
+    # --timeout 600: gunicorn's own default (30s) was silently killing the
+    # worker mid-request on /selector/resolve and /brief/<id>/save, both of
+    # which shell out synchronously to build_prematch.py/build_report.py -
+    # a live Impect pull + PDF render that routinely takes well over 30s on
+    # its own, and much longer whenever Impect's rate limiting kicks in
+    # (seen constantly throughout this project's own usage). The browser
+    # just saw "Internal Server Error" with nothing in the response to
+    # explain why - confirmed via the worker logs ("WORKER TIMEOUT") on a
+    # live pre-match generation attempt.
+    command: ["gunicorn", "--bind", "0.0.0.0:5050", "--workers", "3", "--timeout", "600",
               "--access-logfile", "-", "webapp:app"]
     restart: unless-stopped
 
