@@ -146,6 +146,35 @@ def style_bar_axis(ax, ylabel=None, label_size=8.5, tick_size=7.5):
         ax.set_ylabel(ylabel, fontsize=label_size, color=INK, weight="bold")
 
 
+def _text_width_figfrac(fig, text, fontsize, weight):
+    """Rendered width of `text` at this fontsize/weight, in figure-fraction
+    units - measured against whatever font is actually active (see
+    report_pages.py's _chars_per_figfrac() for the same technique and why
+    a hardcoded guess isn't safe across environments), not assumed."""
+    t = fig.text(0, 0, text, fontsize=fontsize, weight=weight)
+    fig.canvas.draw()
+    w = t.get_window_extent(fig.canvas.get_renderer()).width / fig.bbox.width
+    t.remove()
+    return w
+
+
+def _fit_fontsize(fig, text, max_fontsize, max_width_figfrac, weight="bold",
+                  min_fontsize=6.0):
+    """Largest fontsize at or below max_fontsize for which `text` renders
+    no wider than max_width_figfrac (figure-fraction units). Confirmed
+    needed on a real report: "Cambridge United" at a fixed team-name
+    fontsize ran into the other team's name in stat_table()'s narrower
+    half-width panels, and a long panel header overlapped the panel beside
+    it the same way - both only "happened" to fit for every shorter name/
+    title tried before this one."""
+    fs = max_fontsize
+    while fs > min_fontsize:
+        if _text_width_figfrac(fig, text, fs, weight) <= max_width_figfrac:
+            return fs
+        fs -= 0.5
+    return min_fontsize
+
+
 def stat_table(fig, rect, rows, left_label, right_label, header=None,
               left_colour=None, right_colour=None):
     """Picture-style stat table: a bold section header, a team-name sub-
@@ -163,13 +192,26 @@ def stat_table(fig, rect, rows, left_label, right_label, header=None,
     ax.set_xlim(0, 1); ax.set_ylim(0, 1)
     top = 1.0
     if header:
+        # matplotlib doesn't clip text to its axes by default, so an
+        # unbounded header can run straight across into whatever's next to
+        # this panel - shrink to fit this panel's own figure-fraction
+        # width (96% of it, for a small margin) instead.
+        header_fs = _fit_fontsize(fig, header, 18, rect[2] * 0.96)
         ax.text(0, top, header, ha="left", va="top", color=INK,
-                fontsize=18, weight="bold")
+                fontsize=header_fs, weight="bold")
         top -= 0.145
+    # Team names are centred on fixed points (0.64/0.90 of this panel's own
+    # local width) - long enough names can otherwise run into each other.
+    # Budgets below are each label's own half-width allowance derived from
+    # those fixed centres and the panel's right edge (1.0), converted from
+    # local axes-fraction to figure-fraction via this panel's own width.
+    left_fs = _fit_fontsize(fig, left_label, 10.5, 0.24 * rect[2])
+    right_fs = _fit_fontsize(fig, right_label, 10.5, 0.20 * rect[2])
+    label_fs = min(left_fs, right_fs)
     ax.text(0.64, top, left_label, ha="center", va="top",
-            color=left_colour or INK, fontsize=10.5, weight="bold")
+            color=left_colour or INK, fontsize=label_fs, weight="bold")
     ax.text(0.90, top, right_label, ha="center", va="top",
-            color=right_colour or INK, fontsize=10.5, weight="bold")
+            color=right_colour or INK, fontsize=label_fs, weight="bold")
     top -= 0.075
     ax.plot([0, 1], [top, top], color=GRID, lw=1.1)
     n = len(rows)
