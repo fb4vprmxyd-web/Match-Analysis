@@ -76,29 +76,32 @@ def test_score_credits_own_goal_to_the_right_side(data):
 
 
 # --------------------------------------------------------------- team_stats
-EXPECTED_TEAM_STATS = [
+# Coach-specified profile list (replaces the old flat 17-row table) - Goals
+# here is the same own-goal-aware score as test_score_credits_own_goal_to_
+# the_right_side() above (1-3, not 0-3), so a regression in that crediting
+# would also be caught here independently.
+EXPECTED_ATTACKING_STATS = [
+    ["Goals", "1", "3"],
     ["xG", "1.83", "2.25"],
     ["Post-Shot xG", "1.30", "4.16"],
-    ["xT", "1.26", "3.71"],
-    ["Bypassed Defenders", "60.1", "70.4"],
-    ["Possession", "52%", "48%"],
-    ["Field Tilt", "49%", "51%"],
-    ["Box Touches", "73", "73"],
-    ["Shots", "16", "17"],
-    ["Shots on Target", "5", "8"],
-    ["Successful Passes", "319", "270"],
-    ["Pass Accuracy", "70%", "64%"],
-    ["Open-Play Crosses (Accuracy)", "(18%) 17", "17 (35%)"],
-    ["Aerial Duels", "(34%) 47", "47 (66%)"],
-    ["Ground Duels", "(45%) 73", "73 (55%)"],
+    ["Shots / on target", "16/5", "17/8"],
+    ["Inside Box", "8", "14"],
+    ["Outside Box", "8", "3"],
+    ["Packing xT", "1.26", "3.71"],
+    ["Passes Into Box", "12", "10"],
+    ["Crosses (Accurate)", "(23%) 31", "22 (32%)"],
+]
+EXPECTED_DEFENDING_STATS = [
     ["Interceptions", "49", "35"],
-    ["Fouls", "9", "10"],
-    ["Corners", "8", "12"],
+    ["Pressures", "197", "194"],
+    ["Ball Wins", "201", "193"],
+    ["Ball Win Removed Defenders", "14.5", "19.6"],
 ]
 
 
 def test_team_stats(data):
-    assert data["team_stats"] == EXPECTED_TEAM_STATS
+    assert data["attacking_stats"] == EXPECTED_ATTACKING_STATS
+    assert data["defending_stats"] == EXPECTED_DEFENDING_STATS
 
 
 if __name__ == "__main__":

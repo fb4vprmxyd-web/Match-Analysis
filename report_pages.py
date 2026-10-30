@@ -109,14 +109,28 @@ def page_cover(fig, team, opp, comp, matchday, venue_date, score):
 
 
 # ============================================================== page 2
-def page_match_stats(fig, rows, team, opp):
-    """Team-vs-team comparison table - same stat_table() picture-style
-    layout the pre-match report uses, replacing the old two-colour bar per
-    row."""
+def page_match_stats(fig, attacking, defending, team, opp):
+    """Team-vs-team profile table, split into two stacked panels - coach-
+    specified metric list and order (see report_metrics.team_stats()).
+    Panel heights are proportional to row count (9 and 4 respectively) so
+    a row is the same physical height in both panels, not stretched or
+    squeezed differently - fixed ratio is fine here, unlike the per-roster
+    tables elsewhere in this project, because this metric list itself is
+    now static rather than varying report to report."""
     _title(fig, "MATCH STATS", y=0.955, size=32)
-    table_rows = [(label, lt, rt) for label, lt, rt, lv, rv in rows]
-    stat_table(fig, [0.075, 0.045, 0.85, 0.865], table_rows, team, opp,
-              left_colour=TEAM_C, right_colour=OPP_C)
+    y_top, y_bottom, gap = 0.900, 0.045, 0.025
+    n_att, n_def = len(attacking), len(defending)
+    total = y_top - y_bottom - gap
+    h_def = total * n_def / (n_att + n_def)
+    h_att = total * n_att / (n_att + n_def)
+
+    def _rows(rs):
+        return [(label, lt, rt) for label, lt, rt, lv, rv in rs]
+
+    stat_table(fig, [0.075, y_bottom + h_def + gap, 0.85, h_att], _rows(attacking),
+              team, opp, header="ATTACKING", left_colour=TEAM_C, right_colour=OPP_C)
+    stat_table(fig, [0.075, y_bottom, 0.85, h_def], _rows(defending),
+              team, opp, header="DEFENDING", left_colour=TEAM_C, right_colour=OPP_C)
 
 
 # ============================================================== page 3

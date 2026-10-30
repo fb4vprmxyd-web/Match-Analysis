@@ -345,7 +345,7 @@ def main():
     result_word = ("won" if team_goals > opp_goals else
                    "lost" if team_goals < opp_goals else "drew")
 
-    rows = M.team_stats(ev, ps, TEAM, OPP, scores)
+    attacking_rows, defending_rows = M.team_stats(ev, ps, TEAM, OPP, scores)
     tbl = M.player_table(ev, ps, TEAM)
     bench = M.season_benchmarks(season_pl, TEAM)
     dtbl = M.defensive_player_table(ev, ps, TEAM)
@@ -374,7 +374,7 @@ def main():
     pages = [
         lambda f: P.page_cover(f, TEAM, OPP, COMPETITION, MATCHDAY,
                                VENUE_DATE, score),
-        lambda f: P.page_match_stats(f, rows, TEAM, OPP),
+        lambda f: P.page_match_stats(f, attacking_rows, defending_rows, TEAM, OPP),
         lambda f: P.page_team_charts_a(f, ev, TEAM, OPP, score_line,
                                        xt_totals=xt_totals),
         lambda f: P.page_team_charts_b(f, ev, TEAM, shirts,
@@ -404,7 +404,7 @@ def main():
             plt.close(fig)
 
     print(f"wrote {OUT}")
-    for label, lt, rt, *_ in rows:
+    for label, lt, rt, *_ in attacking_rows + defending_rows:
         print(f"  {label:32s} {lt:>12s}  |  {rt}")
 
 

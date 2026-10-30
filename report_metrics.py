@@ -65,55 +65,53 @@ def open_play(ev):
     return ev.phase.ne("SET_PIECE")
 
 
+def _goals_by_squad(ev: pd.DataFrame) -> dict:
+    """{squadName: goals}, own goals credited to the side that benefits -
+    same logic as build_report.py's match_score(), generalised from
+    home/away to any squad name so team_stats() doesn't need the match
+    score passed in separately."""
+    out = ev.groupby("squadName").GOALS.sum().to_dict()
+    for _, og in ev[ev.actionType == "OWN_GOAL"].iterrows():
+        scorer = og.squadName
+        beneficiary = next((s for s in out if s != scorer), None)
+        if beneficiary is not None:
+            out[beneficiary] = out.get(beneficiary, 0) + 1
+    return out
+
+
 # ------------------------------------------------------------ team stats
 def team_stats(ev: pd.DataFrame, psum: pd.DataFrame, team: str, opp: str,
-               scores: pd.DataFrame = None) -> list:
-    """The page-2 comparison table, in template order.
+               scores: pd.DataFrame = None) -> tuple:
+    """The page-2 profile table, split into (attacking_rows, defending_rows) -
+    coach-specified list and order, see git history for the handwritten spec
+    this replaced the old single flat list with.
 
-    Possession and Field Tilt come from Impect's `getSquadMatchScores`
-    (`RATIO_BALL_POSSESSION`, `FIELD_TILT`) when available. They are NOT in the
-    matchsums, which is why they were derived originally — and the derived
-    possession was wrong (58/42 against Impect's 53/47).
+    Possession/Field Tilt/Bypassed Defenders/Pass Accuracy/Box Touches/
+    Duels/Fouls/Corners from the old version are deliberately dropped, not
+    carried forward - this is the new list, not an addition to the old one.
     """
-    if scores is not None and "RATIO_BALL_POSSESSION" in scores.columns:
-        C = scores.set_index("squadName")
-        poss = (C.RATIO_BALL_POSSESSION * 100).to_dict()
-        tilt = (C.FIELD_TILT * 100).to_dict()
-    else:
-        poss = possession_share(ev)
-        tilt_mask = (ev.startPitchPosition.isin(FINAL_THIRD)
-                     & ev.actionType.isin(ONBALL))
-        tilt = ev[tilt_mask].groupby("squadName").size()
-        tilt = (tilt / tilt.sum() * 100).to_dict()
+    goals = _goals_by_squad(ev)
 
-    # Any event starting with the ball already in the box - not just events
-    # flagged OFFENSIVE_TOUCHES>0, which Impect populates almost exclusively
-    # on RECEPTION (a player taking control of the ball) and leaves null on
-    # shots, passes and dribbles. Filtering on it undercounted badly: a shot
-    # taken first-time off a cross, with no separate "reception" in between,
-    # never registered as a box touch at all.
-    box_touch = _count_by_squad(ev, ev.startPitchPosition == "OPPONENT_BOX")
+    cr_all = ev[ev.action.isin(CROSS_ACTIONS)]
+    cr_tot = cr_all.groupby("squadName").size().to_dict()
+    cr_ok = cr_all[cr_all.result == "SUCCESS"].groupby("squadName").size().to_dict()
 
-    succ = _sum_by_squad(ev, "SUCCESSFUL_PASSES")
-    unsucc = _sum_by_squad(ev, "UNSUCCESSFUL_PASSES")
+    box_passes = ev[(ev.actionType == "PASS") & (ev.result == "SUCCESS")
+                    & (ev.startPitchPosition != "OPPONENT_BOX")
+                    & (ev.endPitchPosition == "OPPONENT_BOX")]
+    box_passes_n = box_passes.groupby("squadName").size().to_dict()
 
-    cr = ev[ev.action.isin(CROSS_ACTIONS) & open_play(ev)]
-    cr_tot = cr.groupby("squadName").size().to_dict()
-    cr_ok = cr[cr.result == "SUCCESS"].groupby("squadName").size().to_dict()
-
-    # Duels must come from the matchsums: the event feed only ever flags the
-    # WINNER of a duel (LOST_* is always null there, and the loser is named in
-    # `duelPlayerName`), so summing events would give every team a 100% rate.
-    duel = psum.groupby("squadName")[["WON_AERIAL_DUELS", "LOST_AERIAL_DUELS",
-                                      "WON_GROUND_DUELS", "LOST_GROUND_DUELS"]].sum()
-    aw = duel.WON_AERIAL_DUELS.to_dict()
-    al = duel.LOST_AERIAL_DUELS.to_dict()
-    gw = duel.WON_GROUND_DUELS.to_dict()
-    gl = duel.LOST_GROUND_DUELS.to_dict()
+    shots_in = _count_by_squad(ev, (ev.actionType == "SHOT")
+                               & (ev.startPitchPosition == "OPPONENT_BOX"))
+    shots_tot = _sum_by_squad(ev, "SHOT_AT_GOAL_NUMBER")
+    sot = _sum_by_squad(ev, "SHOT_AT_GOAL_NUMBER_ON_TARGET")
 
     ints = _count_by_squad(ev, ev.actionType == "INTERCEPTION")
-    fouls = _count_by_squad(ev, ev.actionType == "FOUL")
-    corners = _count_by_squad(ev, ev.action == "CORNER")
+    wins = _sum_by_squad(ev, "BALL_WIN_NUMBER")
+    bwrd = _sum_by_squad(ev, "BALL_WIN_REMOVED_OPPONENTS_DEFENDERS")
+    xt = psum.groupby("squadName")["PXT_ATTACK"].sum().to_dict()
+    press = psum.groupby("squadName")["NUMBER_OF_PRESSES"].sum().to_dict() \
+        if "NUMBER_OF_PRESSES" in psum.columns else {}
 
     def g(d, k, default=0.0):
         return float(d.get(k, default) or 0.0)
@@ -121,57 +119,43 @@ def team_stats(ev: pd.DataFrame, psum: pd.DataFrame, team: str, opp: str,
     def pct(num, den):
         return 0.0 if den == 0 else num / den * 100
 
-    rows = []
-    add = rows.append
-    add(("xG", f"{g(_sum_by_squad(ev,'SHOT_XG'),team):.2f}",
+    def row(label, d_team, d_opp, fmt="{:.0f}"):
+        vt, vo = g(d_team, team), g(d_opp, opp)
+        return (label, fmt.format(vt), fmt.format(vo), vt, vo)
+
+    attacking = [
+        row("Goals", goals, goals),
+        ("xG", f"{g(_sum_by_squad(ev,'SHOT_XG'),team):.2f}",
          f"{g(_sum_by_squad(ev,'SHOT_XG'),opp):.2f}",
-         g(_sum_by_squad(ev, "SHOT_XG"), team), g(_sum_by_squad(ev, "SHOT_XG"), opp)))
+         g(_sum_by_squad(ev, "SHOT_XG"), team), g(_sum_by_squad(ev, "SHOT_XG"), opp)),
+    ]
     ps_ = _sum_by_squad(ev, "POSTSHOT_XG")
-    add(("Post-Shot xG", f"{g(ps_,team):.2f}", f"{g(ps_,opp):.2f}", g(ps_, team), g(ps_, opp)))
-    # pxT must come from the matchsums. The event feed leaves PXT_ATTACK null on
-    # defensive/second-ball events that still carry value, and splits pass value
-    # between passer and receiver, so summing events under-reports the team
-    # total (1.09 vs Impect's published 1.24 here).
-    xt = psum.groupby("squadName")["PXT_ATTACK"].sum().to_dict()
-    add(("xT", f"{g(xt,team):.2f}", f"{g(xt,opp):.2f}", g(xt, team), g(xt, opp)))
-    bpd = _sum_by_squad(ev, "BYPASSED_DEFENDERS")
-    add(("Bypassed Defenders", f"{g(bpd,team):.1f}", f"{g(bpd,opp):.1f}",
-         g(bpd, team), g(bpd, opp)))
-    add(("Possession", f"{g(poss,team):.0f}%", f"{g(poss,opp):.0f}%",
-         g(poss, team), g(poss, opp)))
-    add(("Field Tilt", f"{g(tilt,team):.0f}%", f"{g(tilt,opp):.0f}%",
-         g(tilt, team), g(tilt, opp)))
-    add(("Box Touches", f"{g(box_touch,team):.0f}", f"{g(box_touch,opp):.0f}",
-         g(box_touch, team), g(box_touch, opp)))
-    sh = _sum_by_squad(ev, "SHOT_AT_GOAL_NUMBER")
-    add(("Shots", f"{g(sh,team):.0f}", f"{g(sh,opp):.0f}", g(sh, team), g(sh, opp)))
-    sot = _sum_by_squad(ev, "SHOT_AT_GOAL_NUMBER_ON_TARGET")
-    add(("Shots on Target", f"{g(sot,team):.0f}", f"{g(sot,opp):.0f}",
-         g(sot, team), g(sot, opp)))
-    add(("Successful Passes", f"{g(succ,team):.0f}", f"{g(succ,opp):.0f}",
-         g(succ, team), g(succ, opp)))
-    pa_t = pct(g(succ, team), g(succ, team) + g(unsucc, team))
-    pa_o = pct(g(succ, opp), g(succ, opp) + g(unsucc, opp))
-    add(("Pass Accuracy", f"{pa_t:.0f}%", f"{pa_o:.0f}%", pa_t, pa_o))
-    add(("Open-Play Crosses (Accuracy)",
-         f"({pct(g(cr_ok,team), g(cr_tot,team)):.0f}%) {g(cr_tot,team):.0f}",
-         f"{g(cr_tot,opp):.0f} ({pct(g(cr_ok,opp), g(cr_tot,opp)):.0f}%)",
-         g(cr_tot, team), g(cr_tot, opp)))
-    at, ao = g(aw, team) + g(al, team), g(aw, opp) + g(al, opp)
-    add(("Aerial Duels",
-         f"({pct(g(aw,team),at):.0f}%) {at:.0f}", f"{ao:.0f} ({pct(g(aw,opp),ao):.0f}%)",
-         at, ao))
-    gt, go = g(gw, team) + g(gl, team), g(gw, opp) + g(gl, opp)
-    add(("Ground Duels",
-         f"({pct(g(gw,team),gt):.0f}%) {gt:.0f}", f"{go:.0f} ({pct(g(gw,opp),go):.0f}%)",
-         gt, go))
-    add(("Interceptions", f"{g(ints,team):.0f}", f"{g(ints,opp):.0f}",
-         g(ints, team), g(ints, opp)))
-    add(("Fouls", f"{g(fouls,team):.0f}", f"{g(fouls,opp):.0f}",
-         g(fouls, team), g(fouls, opp)))
-    add(("Corners", f"{g(corners,team):.0f}", f"{g(corners,opp):.0f}",
-         g(corners, team), g(corners, opp)))
-    return rows
+    attacking.append(("Post-Shot xG", f"{g(ps_,team):.2f}", f"{g(ps_,opp):.2f}",
+                      g(ps_, team), g(ps_, opp)))
+    attacking.append(("Shots / on target",
+                      f"{g(shots_tot,team):.0f}/{g(sot,team):.0f}",
+                      f"{g(shots_tot,opp):.0f}/{g(sot,opp):.0f}",
+                      g(shots_tot, team), g(shots_tot, opp)))
+    attacking.append(row("Inside Box", shots_in, shots_in))
+    outside_in = {team: g(shots_tot, team) - g(shots_in, team),
+                 opp: g(shots_tot, opp) - g(shots_in, opp)}
+    attacking.append(row("Outside Box", outside_in, outside_in))
+    attacking.append(("Packing xT", f"{g(xt,team):.2f}", f"{g(xt,opp):.2f}",
+                      g(xt, team), g(xt, opp)))
+    attacking.append(row("Passes Into Box", box_passes_n, box_passes_n))
+    ct, co = g(cr_tot, team), g(cr_tot, opp)
+    attacking.append(("Crosses (Accurate)",
+                      f"({pct(g(cr_ok,team), ct):.0f}%) {ct:.0f}",
+                      f"{co:.0f} ({pct(g(cr_ok,opp), co):.0f}%)", ct, co))
+
+    defending = [
+        row("Interceptions", ints, ints),
+        row("Pressures", press, press),
+        row("Ball Wins", wins, wins),
+        ("Ball Win Removed Defenders", f"{g(bwrd,team):.1f}", f"{g(bwrd,opp):.1f}",
+         g(bwrd, team), g(bwrd, opp)),
+    ]
+    return attacking, defending
 
 
 # ------------------------------------------------------- event selections

@@ -61,30 +61,33 @@ def test_score(data):
 # (label, team_string, opp_string) exactly as they render on the match-stats
 # page - pinned as the formatted strings, not the raw floats, since a
 # formatting regression (wrong rounding, swapped side) is exactly what this
-# should catch and a raw-float comparison could miss.
-EXPECTED_TEAM_STATS = [
+# should catch and a raw-float comparison could miss. Coach-specified
+# profile list (replaces the old flat 17-row table); Goals here (1-1)
+# matches test_score_credits_own_goal_to_the_right_side() above, though
+# this match has no own goal to exercise that path - see
+# test_bradford_golden.py for the own-goal case.
+EXPECTED_ATTACKING_STATS = [
+    ["Goals", "1", "1"],
     ["xG", "0.60", "2.40"],
     ["Post-Shot xG", "0.98", "1.05"],
-    ["xT", "0.86", "0.78"],
-    ["Bypassed Defenders", "36.1", "66.1"],
-    ["Possession", "47%", "53%"],
-    ["Field Tilt", "55%", "45%"],
-    ["Box Touches", "22", "61"],
-    ["Shots", "6", "20"],
-    ["Shots on Target", "3", "6"],
-    ["Successful Passes", "377", "438"],
-    ["Pass Accuracy", "72%", "76%"],
-    ["Open-Play Crosses (Accuracy)", "(40%) 10", "10 (50%)"],
-    ["Aerial Duels", "(41%) 32", "32 (59%)"],
-    ["Ground Duels", "(52%) 48", "48 (48%)"],
+    ["Shots / on target", "6/3", "20/6"],
+    ["Inside Box", "4", "12"],
+    ["Outside Box", "2", "8"],
+    ["Packing xT", "0.86", "0.78"],
+    ["Passes Into Box", "4", "9"],
+    ["Crosses (Accurate)", "(25%) 16", "12 (42%)"],
+]
+EXPECTED_DEFENDING_STATS = [
     ["Interceptions", "38", "29"],
-    ["Fouls", "12", "9"],
-    ["Corners", "2", "7"],
+    ["Pressures", "168", "139"],
+    ["Ball Wins", "166", "169"],
+    ["Ball Win Removed Defenders", "6.2", "14.8"],
 ]
 
 
 def test_team_stats(data):
-    assert data["team_stats"] == EXPECTED_TEAM_STATS
+    assert data["attacking_stats"] == EXPECTED_ATTACKING_STATS
+    assert data["defending_stats"] == EXPECTED_DEFENDING_STATS
 
 
 # ------------------------------------------------------------- player_table

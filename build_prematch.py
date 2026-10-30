@@ -312,10 +312,19 @@ def facts(opp, ours):
                  ("aw", "WON_AERIAL_DUELS"), ("al", "LOST_AERIAL_DUELS"),
                  ("fouls", "NUMBER_OF_FOULS"), ("shots", "SHOT_AT_GOAL_NUMBER"),
                  ("goals", "GOALS"), ("on_target", "SHOT_AT_GOAL_NUMBER_ON_TARGET"),
+                 ("shots_in", "SHOT_AT_GOAL_NUMBER_IN_PITCH_POSITION_OPPONENT_BOX"),
+                 ("box_passes", "SUCCESSFUL_PASSES_TO_PITCH_POSITION_OPPONENT_BOX"),
+                 # No raw "interception count" field in the matchsums (unlike
+                 # the post-match report's event-level data) - the closest is
+                 # ball wins specifically via an interception, which should be
+                 # very close in practice since an interception by definition
+                 # wins the ball.
+                 ("ints", "BALL_WIN_NUMBER_BY_ACTION_INTERCEPTION"),
                  ("cross_ok", None), ("cross_bad", None)]:
         if c is None:
             continue
         f[k], f[k + "_r"] = g(c), g_us(c)
+    f["shots_out"], f["shots_out_r"] = f["shots"] - f["shots_in"], f["shots_r"] - f["shots_in_r"]
 
     # crosses completed % - both cross action types combined, both sides.
     # No single Impect column for "crosses"; built from the same
@@ -687,31 +696,51 @@ def page_cover(fig, f):
 
 
 def page_profile(fig, f):
-    # Page 2 feedback: combine shots into a "shots / on target" row, drop
-    # bypassed defenders and successful passes, add possession - the
-    # remaining rows are the closest read of "passes defenders" (there's no
-    # exact stat by that name; "Bypassed Defenders" is the only candidate).
+    # Coach-specified profile list and order, split into Attacking/
+    # Defending panels - same list build_report.py's page_match_stats()
+    # now uses on the post-match side, see report_metrics.team_stats().
+    # Two definitional gaps versus the post-match report, both accepted:
+    # Interceptions reads ball-wins-via-interception (no raw interception
+    # count in the matchsums this averages across several matches), and
+    # every row here is a per-game mean across the sample rather than one
+    # match's raw total.
     n_opp, n_our = len(f["opp_matches"]), len(f["our_matches"])
     sample = (f"last {n_opp} for them, {n_our} for us" if n_opp != n_our
              else f"last {n_opp} matches each")
     title(fig, "THE PROFILE", f"{OPPONENT} vs {f['ref']} — {sample}, per game")
-    poss = f["scores"].get("RATIO_BALL_POSSESSION", (0.0, 0.0))
-    rows = [
+
+    attacking = [
+        ("Goals", f"{f['goals']:.1f}", f"{f['goals_r']:.1f}"),
         ("xG", f"{f['xg']:.2f}", f"{f['xg_r']:.2f}"),
         ("Post-Shot xG", f"{f['psxg']:.2f}", f"{f['psxg_r']:.2f}"),
-        ("Shots / on target", f"{f['shots']:.1f}/{f['on_target']:.1f}",
-         f"{f['shots_r']:.1f}/{f['on_target_r']:.1f}"),
-        ("Possession", f"{poss[0]*100:.0f}%", f"{poss[1]*100:.0f}%"),
+        ("Shots / on target", f"{f['shots']:.0f}/{f['on_target']:.0f}",
+         f"{f['shots_r']:.0f}/{f['on_target_r']:.0f}"),
+        ("Inside Box", f"{f['shots_in']:.0f}", f"{f['shots_in_r']:.0f}"),
+        ("Outside Box", f"{f['shots_out']:.0f}", f"{f['shots_out_r']:.0f}"),
         ("Packing xT", f"{f['pxt']:.2f}", f"{f['pxt_r']:.2f}"),
+        ("Passes Into Box", f"{f['box_passes']:.0f}", f"{f['box_passes_r']:.0f}"),
+        ("Crosses (Accurate)", f"({f['cross_pct']:.0f}%) {f['cross_ok']+f['cross_bad']:.0f}",
+         f"{f['cross_ok_r']+f['cross_bad_r']:.0f} ({f['cross_pct_r']:.0f}%)"),
+    ]
+    defending = [
+        ("Interceptions", f"{f['ints']:.0f}", f"{f['ints_r']:.0f}"),
         ("Pressures", f"{f['press']:.0f}", f"{f['press_r']:.0f}"),
         ("Ball Wins", f"{f['wins']:.0f}", f"{f['wins_r']:.0f}"),
         ("Ball Win Removed Defenders", f"{f['bwrd']:.1f}", f"{f['bwrd_r']:.1f}"),
-        ("Ground Duels Won", f"{f['gw']:.0f}", f"{f['gl']:.0f}"),
-        ("Aerial Duels Won", f"{f['aw']:.0f}", f"{f['al']:.0f}"),
-        ("Fouls", f"{f['fouls']:.0f}", f"{f['fouls_r']:.0f}"),
     ]
-    stat_table(fig, [0.075, 0.075, 0.85, 0.80], rows, OPPONENT, f["ref"],
+    y_top, y_bottom, gap = 0.875, 0.075, 0.022
+    n_att, n_def = len(attacking), len(defending)
+    total = y_top - y_bottom - gap
+    h_def = total * n_def / (n_att + n_def)
+    h_att = total * n_att / (n_att + n_def)
+    stat_table(fig, [0.075, y_bottom + h_def + gap, 0.85, h_att], attacking,
+              OPPONENT, f["ref"], header="ATTACKING",
               left_colour=OPP_C, right_colour=TEAM_C)
+    stat_table(fig, [0.075, y_bottom, 0.85, h_def], defending,
+              OPPONENT, f["ref"], header="DEFENDING",
+              left_colour=OPP_C, right_colour=TEAM_C)
+
+    poss = f["scores"].get("RATIO_BALL_POSSESSION", (0.0, 0.0))
     bits = []
     more_less = "Less" if poss[0] < poss[1] else "More"
     bits.append(f"{more_less} of the ball ({poss[0]*100:.0f}% to {poss[1]*100:.0f}%)")

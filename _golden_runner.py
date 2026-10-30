@@ -44,11 +44,12 @@ def main():
     players = {name: {k: float(v) for k, v in row.items()}
               for name, row in tbl.set_index("playerName").to_dict(orient="index").items()}
 
+    attacking, defending = M.team_stats(ev, ps, team, opp, scores)
     out = {
         "home": home, "away": away, "hg": hg, "ag": ag,
         "own_goal_squads": og.squadName.tolist(),
-        "team_stats": [[r[0], r[1], r[2]]
-                       for r in M.team_stats(ev, ps, team, opp, scores)],
+        "attacking_stats": [[r[0], r[1], r[2]] for r in attacking],
+        "defending_stats": [[r[0], r[1], r[2]] for r in defending],
         "players": players,
         "season_context": BR.season_context(ev, ps, season_sq, season_pl,
                                             tbl, setp, squad_sums, scores),
