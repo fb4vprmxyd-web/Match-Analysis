@@ -77,9 +77,20 @@ def sample_caption(our_spec: dict, opp_spec: dict, our_caches: list, opp_caches:
     league games each side", "4 games for them, 3 for us") - used to keep
     the dashboard's Pre-Match/Corner Analysis cards readable without a
     human writing them by hand for every fixture."""
+    n_us, n_opp = len(our_caches), len(opp_caches)
+    if our_spec.get("before_date") or opp_spec.get("before_date"):
+        # A historical "as of" snapshot (built for a fixture that's since
+        # been played) still has count=None like the current-season case
+        # below, but "every game this season" would wrongly read as
+        # including games played AFTER the date this was actually built
+        # for - confirmed as a real bug: rebuilding these after a page-2
+        # template change silently relabelled 10 historical snapshots as
+        # current-season ones, even though the underlying sample itself
+        # was still correctly scoped by before_date.
+        return (f"Every game each side had played before this fixture "
+               f"({n_us} for us, {n_opp} for them)")
     if our_spec.get("count") is None and opp_spec.get("count") is None:
         return "Every game each side has played this season"
-    n_us, n_opp = len(our_caches), len(opp_caches)
     same_scope = (n_us == n_opp and our_spec.get("competition") == opp_spec.get("competition"))
     comp = opp_spec.get("competition", "all")
     comp_word = {"league": "league ", "cup": "cup "}.get(comp, "")
