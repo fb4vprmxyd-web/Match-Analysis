@@ -536,6 +536,9 @@ PERCENTILE_METRICS = [
     # see league_percentiles()'s source=="computed" branch.
     (("BYPASSED_OPPONENTS", "BALL_LOSS_REMOVED_TEAMMATES"), "Build-Up Efficiency",
      True, "{:.1f}", "computed"),
+    ("RATIO_DUELS", "Overall Duels Won", True, "{:.0%}", "scores"),
+    ("RATIO_GROUND_DUELS", "Ground Duels Won", True, "{:.0%}", "scores"),
+    ("RATIO_AERIAL_DUELS", "Aerial Duels Won", True, "{:.0%}", "scores"),
 ]
 
 
