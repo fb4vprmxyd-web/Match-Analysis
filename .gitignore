@@ -25,3 +25,7 @@ Post Match Report v Leyton Orient.pdf
 *.patch_page.pdf
 *.pdf.tmp
 *.tmp
+
+# Impect definition text - copied to the droplet directly, kept out of this public repo
+impect_definitions.csv
+glossary.json

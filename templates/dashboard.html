@@ -175,7 +175,7 @@
     max-width: 760px;
   }
 
-  #season.pane, #brief.pane, #selector.pane { padding: 0; }
+  #season.pane, #brief.pane, #selector.pane, #glossary.pane { padding: 0; }
   .frame-wrap {
     border: 1px solid var(--grid);
     border-radius: 12px;
@@ -219,6 +219,7 @@
       <li><button class="navitem" data-target="corners" style="--accent:#FDB913"><span class="dot"></span>Set Piece Analysis<span class="count">{{ corner_cards|length }}</span></button></li>
       <li><button class="navitem" data-target="brief" style="--accent:#9B6FE3"><span class="dot"></span>Coach's Brief</button></li>
       <li><button class="navitem" data-target="selector" style="--accent:#2BC9A5"><span class="dot"></span>Pre-Match Selector</button></li>
+      <li><button class="navitem" data-target="glossary" style="--accent:#4EB6E3"><span class="dot"></span>Glossary</button></li>
     </ul>
     <a href="/logout" class="muted" style="margin:14px 10px 0; font-size:12px;">Sign out{{ ' (' + session_user + ')' if session_user }}</a>
   </nav>
@@ -314,6 +315,12 @@
     <section id="selector" class="pane">
       <div class="frame-wrap">
         <iframe src="/selector" title="Pre-Match Selector"></iframe>
+      </div>
+    </section>
+
+    <section id="glossary" class="pane">
+      <div class="frame-wrap">
+        <iframe src="/glossary" title="Glossary"></iframe>
       </div>
     </section>
 

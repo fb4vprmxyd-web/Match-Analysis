@@ -1,0 +1,109 @@
+{% extends "base.html" %}
+{% block title %}Leyton Orient — Glossary{% endblock %}
+{% block content %}
+<style>
+  main { max-width: 1180px; }
+  .gl-bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 18px; }
+  .gl-bar input {
+    flex: 1 1 260px; background: var(--sidebar); color: var(--ink);
+    border: 1px solid var(--grid); border-radius: 8px; padding: 10px 12px;
+    font-size: 14px; font-family: inherit;
+  }
+  .gl-tab { padding: 8px 14px; font-size: 13px; }
+  .gl-tab.on { background: var(--team); border-color: var(--team); }
+  .gl-section { margin-bottom: 28px; }
+  .gl-section h2 { font-size: 16px; margin: 0 0 4px; }
+  .gl-section h2 .n { color: var(--muted); font-weight: 500; font-size: 12px; margin-left: 6px; }
+  .gl-table { table-layout: fixed; }
+  .gl-table th:nth-child(1) { width: 22%; }
+  .gl-table th:nth-child(3) { width: 24%; }
+  .gl-table td { vertical-align: top; line-height: 1.5; word-wrap: break-word; }
+  .gl-term { font-weight: 700; }
+  .gl-code { display: block; margin-top: 3px; color: var(--muted); font-size: 10.5px;
+    font-family: ui-monospace, Menlo, monospace; word-break: break-all; }
+  .gl-def { white-space: pre-line; }
+  .gl-mean { color: var(--muted); font-size: 13px; margin-top: 6px; white-space: pre-line; }
+  .gl-formula { font-family: ui-monospace, Menlo, monospace; font-size: 12.5px; color: var(--amber); }
+  .gl-none { color: var(--muted); }
+  .tag { display: inline-block; font-size: 10px; font-weight: 700; padding: 2px 7px; border-radius: 5px;
+    margin-left: 6px; vertical-align: middle; text-transform: uppercase; letter-spacing: .05em; }
+  .tag.low { background: var(--grid); color: var(--amber); }
+  .tag.src-impect { background: var(--grid); color: var(--good); margin-left: 0; }
+  .tag.src-score { background: var(--grid); color: var(--info); margin-left: 0; }
+  .tag.src-ours { background: var(--grid); color: var(--amber); margin-left: 0; }
+  .gl-src { display: table; margin-top: 6px; }
+  tr.hide, .gl-section.hide { display: none; }
+  .gl-empty { display: none; padding: 24px 0; }
+</style>
+
+<div class="gl-bar">
+  <input id="q" type="search" placeholder="Search terms, definitions or Impect column names…" autocomplete="off">
+  <button class="secondary gl-tab on" data-cat="all">All</button>
+  {% for c in categories %}
+  <button class="secondary gl-tab" data-cat="{{ c }}">{{ c }}</button>
+  {% endfor %}
+</div>
+<p class="muted">Only the terms this platform uses. Each term is tagged by source:
+<span class="tag src-impect">Impect</span> Impect's own wording,
+<span class="tag src-score">Impect score</span> an Impect figure missing from their definitions file, described in our words, and
+<span class="tag src-ours">Our calculation</span> worked out by this platform from Impect's data.
+<span class="tag low">Lower is better</span> marks metrics where a smaller value is the good outcome.</p>
+
+{% for c in categories %}
+{% set rows = metrics|selectattr('category','equalto',c)|list %}
+<section class="gl-section panel" data-cat="{{ c }}">
+  <h2>{{ c }}<span class="n">{{ rows|length }} terms</span></h2>
+  <table class="gl-table">
+    <thead><tr><th>Term</th><th>Definition</th><th>Formula</th></tr></thead>
+    <tbody>
+      {% for m in rows %}
+      <tr data-text="{{ (m.term ~ ' ' ~ m.column ~ ' ' ~ m.definition ~ ' ' ~ m.meaning ~ ' ' ~ m.formula)|lower }}">
+        <td>
+          <span class="gl-term">{{ m.term }}</span>
+          {% if m.lower_is_better %}<span class="tag low">Lower is better</span>{% endif %}
+          {% if m.column %}<span class="gl-code">{{ m.column }}</span>{% endif %}
+          <span class="tag src-{{ m.source }} gl-src">{{ {'impect':'Impect','score':'Impect score','ours':'Our calculation'}[m.source] }}</span>
+        </td>
+        <td>
+          <div class="gl-def">{{ m.definition }}</div>
+          {% if m.meaning and m.meaning != m.definition %}<div class="gl-mean">{{ m.meaning }}</div>{% endif %}
+        </td>
+        <td>{% if m.formula %}<span class="gl-formula">{{ m.formula }}</span>{% elif m.source == 'score' %}<span class="gl-none">Calculated by Impect</span>{% else %}<span class="gl-none">Direct count / sum</span>{% endif %}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endfor %}
+
+<p class="muted gl-empty" id="empty">No terms match that search.</p>
+
+<script>
+(function () {
+  var q = document.getElementById('q'), cat = 'all';
+  function apply() {
+    var term = q.value.trim().toLowerCase(), any = false;
+    document.querySelectorAll('.gl-section').forEach(function (sec) {
+      var inCat = cat === 'all' || sec.dataset.cat === cat;
+      var shown = 0;
+      sec.querySelectorAll('tbody tr').forEach(function (tr) {
+        var ok = !term || tr.dataset.text.indexOf(term) !== -1;
+        tr.classList.toggle('hide', !ok);
+        if (ok) shown++;
+      });
+      var vis = inCat && shown > 0;
+      sec.classList.toggle('hide', !vis);
+      if (vis) any = true;
+    });
+    document.getElementById('empty').style.display = any ? 'none' : 'block';
+  }
+  q.addEventListener('input', apply);
+  document.querySelectorAll('.gl-tab').forEach(function (b) {
+    b.addEventListener('click', function () {
+      document.querySelectorAll('.gl-tab').forEach(function (x) { x.classList.remove('on'); });
+      b.classList.add('on'); cat = b.dataset.cat; apply();
+    });
+  });
+})();
+</script>
+{% endblock %}

@@ -589,6 +589,16 @@ def selector_resolve():
                           fixture_found=fixture is not None)
 
 
+_GLOSSARY_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "glossary.json")
+
+
+@app.route("/glossary")
+def glossary():
+    with open(_GLOSSARY_PATH, encoding="utf-8") as f:
+        data = json.load(f)
+    return render_template("glossary.html", **data)
+
+
 @app.route("/reports/<path:filename>")
 def serve_report(filename):
     return send_from_directory(str(REPORTS_ROOT), filename)
