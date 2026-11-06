@@ -12,7 +12,7 @@ from pathlib import Path
 import pandas as pd
 
 OUT = Path(__file__).resolve().parent / "glossary.json"
-CATEGORIES = ["Attacking", "Defending", "Transition", "Squad Stats", "Player Stats"]
+CATEGORIES = ["Attacking", "Defending", "Passing", "Transition", "Squad Stats", "Player Stats"]
 
 
 def _expand(template, values):
@@ -158,6 +158,14 @@ OURS = [
     ("Conceded vs xG", "Defending", "Positive means the defence has held up better than the chances faced.", "Shot-based xG Conceded − Goals Conceded"),
     ("Set-Piece xG Conceded", "Defending", "xG conceded directly from the opponent's set pieces.", "Σ xG of opponent corners, free kicks, throw-ins and goal kicks"),
     ("Receptions Beyond the Last Line", "Defending", "Opponent receptions past the defensive line in the final third, plus box receptions.", "Count of qualifying reception events"),
+    ("Total Passes", "Passing", "Every pass attempted, completed or not.", "Count of PASS events"),
+    ("Forward Passes", "Passing", "Passes attempted towards the opponent's goal.", "Pass angle within 45° either side of straight at goal"),
+    ("Back Passes", "Passing", "Passes attempted back towards a side's own goal.", "Pass angle within 45° either side of straight back"),
+    ("Lateral Passes", "Passing", "Passes attempted across the pitch, neither forward nor back.", "Pass angle between 45° and 135° either side"),
+    ("Long Passes", "Passing", "Passes of 35 yards or more, crosses excluded.", "Pass distance ≥ 32m"),
+    ("Passes to Final Third", "Passing", "Completed passes from outside the final third into it or the box.", "Count of completed qualifying passes"),
+    ("Through Passes", "Passing", "Completed open-play passes, crosses and headers excluded, that take out at least one opposition defender and are received in the final third. Impect has no through-pass field, so this is our approximation.", "Completed pass with Bypassed Defenders ≥ 1, ending in the final third"),
+    ("Deep Completions", "Passing", "Completed passes, crosses excluded, that end within 20m of the opponent's goal.", "Distance from pass end point to goal centre ≤ 20m"),
     ("2nd Balls Won", "Transition", "Loose-ball regains after an initial contest, optionally restricted to a pitch third.", "Count of loose-ball regains"),
 ]
 

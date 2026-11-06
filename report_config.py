@@ -175,8 +175,29 @@ def _fit_fontsize(fig, text, max_fontsize, max_width_figfrac, weight="bold",
     return min_fontsize
 
 
+def stacked_stat_tables(fig, sections, left_label, right_label, y_top, y_bottom,
+                        gap=0.022, x=0.075, width=0.85, head_h=0.045, **kw):
+    """Several stat_table() panels stacked top to bottom (page 2's
+    ATTACKING / DEFENDING / PASSING). Every panel gets the same fixed
+    header allowance `head_h` and the remaining height is shared out by
+    row count, so rows are one physical height across panels and a short
+    panel's header doesn't get squeezed into its first row.
+
+    `sections` is a list of (header, rows)."""
+    n_rows = sum(len(rows) for _, rows in sections)
+    row_h = (y_top - y_bottom - gap * (len(sections) - 1)
+             - head_h * len(sections)) / n_rows
+    y = y_top
+    for header, rows in sections:
+        h = head_h + row_h * len(rows)
+        y -= h
+        stat_table(fig, [x, y, width, h], rows, left_label, right_label,
+                   header=header, head_h=head_h, **kw)
+        y -= gap
+
+
 def stat_table(fig, rect, rows, left_label, right_label, header=None,
-              left_colour=None, right_colour=None):
+              left_colour=None, right_colour=None, head_h=None):
     """Picture-style stat table: a bold section header, a team-name sub-
     header row, then label / left-value / right-value rows with thin grey
     dividers - replaces a bar-chart comparison. Shared across every report
@@ -186,10 +207,19 @@ def stat_table(fig, rect, rows, left_label, right_label, header=None,
     `rows` is a list of (label, left_str, right_str) or (label, left_str,
     right_str, left_pct, right_pct) - the last two, if given, render as a
     small grey annotation next to the value (e.g. "29%").
+
+    `head_h`, in figure fraction, fixes the header + team-name allowance
+    instead of the default share of the panel's own height.
     """
     from matplotlib.patches import Rectangle
     ax = fig.add_axes(rect); ax.axis("off")
     ax.set_xlim(0, 1); ax.set_ylim(0, 1)
+    # local fractions for the header step and team-name step (default
+    # 0.145 / 0.075 of the panel, i.e. 66% / 34% of the allowance)
+    head_step, names_step = 0.145, 0.075
+    if head_h is not None:
+        local = head_h / rect[3]
+        head_step, names_step = local * 0.66, local * 0.34
     top = 1.0
     if header:
         # matplotlib doesn't clip text to its axes by default, so an
@@ -199,7 +229,7 @@ def stat_table(fig, rect, rows, left_label, right_label, header=None,
         header_fs = _fit_fontsize(fig, header, 18, rect[2] * 0.96)
         ax.text(0, top, header, ha="left", va="top", color=INK,
                 fontsize=header_fs, weight="bold")
-        top -= 0.145
+        top -= head_step
     # Team names are centred on fixed points (0.64/0.90 of this panel's own
     # local width) - long enough names can otherwise run into each other.
     # Budgets below are each label's own half-width allowance derived from
@@ -212,7 +242,7 @@ def stat_table(fig, rect, rows, left_label, right_label, header=None,
             color=left_colour or INK, fontsize=label_fs, weight="bold")
     ax.text(0.90, top, right_label, ha="center", va="top",
             color=right_colour or INK, fontsize=label_fs, weight="bold")
-    top -= 0.075
+    top -= names_step
     ax.plot([0, 1], [top, top], color=GRID, lw=1.1)
     n = len(rows)
     row_h = top / n

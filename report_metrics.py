@@ -158,6 +158,67 @@ def team_stats(ev: pd.DataFrame, psum: pd.DataFrame, team: str, opp: str,
     return attacking, defending
 
 
+LONG_PASS_M = 32.0          # 35 yards, the usual long-ball threshold
+DEEP_COMPLETION_M = 20.0    # end point within 20m of the opponent's goal
+GOAL_X = 52.5               # Impect's pitch is 105 x 68, centred on 0
+
+
+def passing_counts(ev: pd.DataFrame, squad: str) -> dict:
+    """The page-2 PASSING panel's raw counts for one squad, summed over
+    however many matches `ev` holds - shared by the post-match (one match)
+    and pre-match (per-game mean, divided by the caller) reports.
+
+    Volume rows (total, forward/back/lateral, long) count attempts; the
+    rest count completions only, same as Passes Into Box. Direction comes
+    from Impect's passAngle (0 = straight at goal), split at 45 degrees.
+    Through Passes have no Impect field: a completed, non-cross, non-header
+    open-play pass that takes out at least one opposition defender
+    (BYPASSED_DEFENDERS >= 1) and is received in the final third.
+    """
+    p = ev[(ev.squadName == squad) & (ev.actionType == "PASS")]
+    done = (p.result == "SUCCESS") & (p.passReceiverType == "TEAMMATE")
+    not_cross = ~p.action.isin(CROSS_ACTIONS)
+    a = p.passAngle
+    fwd = (a < 45) | (a >= 315)
+    back = (a >= 135) & (a < 225)
+    to_ft = p.endPitchPosition.isin(FINAL_THIRD)
+    deep = np.hypot(GOAL_X - p.endAdjCoordinatesX, p.endAdjCoordinatesY) <= DEEP_COMPLETION_M
+    return {
+        "total": int(len(p)),
+        "forward": int(fwd.sum()),
+        "back": int(back.sum()),
+        "lateral": int((a.notna() & ~fwd & ~back).sum()),
+        "long": int((not_cross & (p.passDistance >= LONG_PASS_M)).sum()),
+        "final_third": int((done & ~p.startPitchPosition.isin(FINAL_THIRD) & to_ft).sum()),
+        "through": int((done & not_cross & (p.action != "HEADER") & open_play(p)
+                        & (p.BYPASSED_DEFENDERS >= 1) & to_ft).sum()),
+        "deep": int((done & not_cross & deep).sum()),
+    }
+
+
+PASSING_ROWS = [("Total Passes", "total"), ("Forward Passes", "forward"),
+                ("Back Passes", "back"), ("Lateral Passes", "lateral"),
+                ("Long Passes", "long"), ("Passes to Final Third", "final_third"),
+                ("Through Passes", "through"), ("Deep Completions", "deep")]
+
+
+def passing_stats(ev: pd.DataFrame, team: str, opp: str,
+                  scores: pd.DataFrame = None) -> list:
+    """Page-2 PASSING panel rows, same 5-tuple shape as team_stats().
+    Possession is Impect's RATIO_BALL_POSSESSION where the match scores
+    are cached, falling back to our own time-on-ball split otherwise."""
+    poss = {}
+    if scores is not None and "RATIO_BALL_POSSESSION" in scores.columns:
+        poss = (scores.set_index("squadName").RATIO_BALL_POSSESSION * 100).to_dict()
+    if team not in poss or opp not in poss:
+        poss = possession_share(ev)
+    pt, po = float(poss.get(team, 0.0)), float(poss.get(opp, 0.0))
+    rows = [("Possession", f"{pt:.0f}%", f"{po:.0f}%", pt, po)]
+    ct, co = passing_counts(ev, team), passing_counts(ev, opp)
+    rows += [(label, str(ct[k]), str(co[k]), ct[k], co[k]) for label, k in PASSING_ROWS]
+    return rows
+
+
 # ------------------------------------------------------- event selections
 def shots(ev: pd.DataFrame) -> pd.DataFrame:
     s = ev[ev.actionType == "SHOT"].copy()

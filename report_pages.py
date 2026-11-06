@@ -11,7 +11,7 @@ from matplotlib.lines import Line2D
 from report_config import (BG, PANEL, INK, MUTED, GRID, TEAM_C, OPP_C, GOOD, BAD,
                            BARC, PAGE_W, PAGE_H, FONT, draw_pitch, style_bar_axis,
                            surname, contrast_ink, PITCH_X, PITCH_Y,
-                           player_table, stat_table, line_pitch,
+                           player_table, stat_table, stacked_stat_tables, line_pitch,
                            required_table_height)
 import report_metrics as M
 
@@ -109,28 +109,20 @@ def page_cover(fig, team, opp, comp, matchday, venue_date, score):
 
 
 # ============================================================== page 2
-def page_match_stats(fig, attacking, defending, team, opp):
-    """Team-vs-team profile table, split into two stacked panels - coach-
-    specified metric list and order (see report_metrics.team_stats()).
-    Panel heights are proportional to row count (9 and 4 respectively) so
-    a row is the same physical height in both panels, not stretched or
-    squeezed differently - fixed ratio is fine here, unlike the per-roster
-    tables elsewhere in this project, because this metric list itself is
-    now static rather than varying report to report."""
+def page_match_stats(fig, attacking, defending, passing, team, opp):
+    """Team-vs-team profile table, split into three stacked panels - coach-
+    specified metric list and order (see report_metrics.team_stats() and
+    passing_stats()). Panel heights come from stacked_stat_tables(), so a
+    row is the same physical height in every panel."""
     _title(fig, "MATCH STATS", y=0.955, size=32)
-    y_top, y_bottom, gap = 0.900, 0.045, 0.025
-    n_att, n_def = len(attacking), len(defending)
-    total = y_top - y_bottom - gap
-    h_def = total * n_def / (n_att + n_def)
-    h_att = total * n_att / (n_att + n_def)
 
     def _rows(rs):
         return [(label, lt, rt) for label, lt, rt, lv, rv in rs]
 
-    stat_table(fig, [0.075, y_bottom + h_def + gap, 0.85, h_att], _rows(attacking),
-              team, opp, header="ATTACKING", left_colour=TEAM_C, right_colour=OPP_C)
-    stat_table(fig, [0.075, y_bottom, 0.85, h_def], _rows(defending),
-              team, opp, header="DEFENDING", left_colour=TEAM_C, right_colour=OPP_C)
+    stacked_stat_tables(fig, [("ATTACKING", _rows(attacking)),
+                              ("DEFENDING", _rows(defending)),
+                              ("PASSING", _rows(passing))],
+                        team, opp, 0.910, 0.030, left_colour=TEAM_C, right_colour=OPP_C)
 
 
 # ============================================================== page 3

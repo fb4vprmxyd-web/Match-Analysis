@@ -47,7 +47,7 @@ import report_metrics as RM
 from report_config import (apply_style, BG, PANEL, INK, MUTED, GRID, GOOD, BAD,
                            BARC, TEAM_C, PAGE_W, PAGE_H, style_bar_axis, surname,
                            draw_pitch, contrast_ink, PITCH_X, PITCH_Y,
-                           stat_table, player_table, line_pitch)
+                           stat_table, stacked_stat_tables, player_table, line_pitch)
 from envconfig import CACHE_ROOT, REPORTS_ROOT
 
 
@@ -569,6 +569,17 @@ def facts(opp, ours):
                 counts.append(int(box[0]) + 1)
         return (sum(counts) / len(counts)) if counts else None
 
+    # ---- page-2 PASSING panel: same counts as the post-match report,
+    # as a per-game mean across each side's own sample
+    def _passing_per_game(evdf, squad):
+        if evdf is None or len(evdf) == 0:
+            return {k: 0.0 for _, k in RM.PASSING_ROWS}
+        n = max(evdf[evdf.squadName == squad].matchId.nunique(), 1)
+        return {k: v / n for k, v in RM.passing_counts(evdf, squad).items()}
+
+    f["passing"] = _passing_per_game(ev, OPPONENT)
+    f["passing_r"] = _passing_per_game(ours["ev"], US)
+
     f["passes_to_box"] = _passes_before_box(ev, OPPONENT)
     f["passes_to_box_r"] = _passes_before_box(ours["ev"], US)
 
@@ -728,19 +739,15 @@ def page_profile(fig, f):
         ("Ball Wins", f"{f['wins']:.0f}", f"{f['wins_r']:.0f}"),
         ("Ball Win Removed Defenders", f"{f['bwrd']:.1f}", f"{f['bwrd_r']:.1f}"),
     ]
-    y_top, y_bottom, gap = 0.875, 0.075, 0.022
-    n_att, n_def = len(attacking), len(defending)
-    total = y_top - y_bottom - gap
-    h_def = total * n_def / (n_att + n_def)
-    h_att = total * n_att / (n_att + n_def)
-    stat_table(fig, [0.075, y_bottom + h_def + gap, 0.85, h_att], attacking,
-              OPPONENT, f["ref"], header="ATTACKING",
-              left_colour=OPP_C, right_colour=TEAM_C)
-    stat_table(fig, [0.075, y_bottom, 0.85, h_def], defending,
-              OPPONENT, f["ref"], header="DEFENDING",
-              left_colour=OPP_C, right_colour=TEAM_C)
-
     poss = f["scores"].get("RATIO_BALL_POSSESSION", (0.0, 0.0))
+    passing = [("Possession", f"{poss[0]*100:.0f}%", f"{poss[1]*100:.0f}%")]
+    passing += [(label, f"{f['passing'][k]:.0f}", f"{f['passing_r'][k]:.0f}")
+                for label, k in RM.PASSING_ROWS]
+    stacked_stat_tables(fig, [("ATTACKING", attacking), ("DEFENDING", defending),
+                              ("PASSING", passing)],
+                        OPPONENT, f["ref"], 0.875, 0.060,
+                        left_colour=OPP_C, right_colour=TEAM_C)
+
     bits = []
     more_less = "Less" if poss[0] < poss[1] else "More"
     bits.append(f"{more_less} of the ball ({poss[0]*100:.0f}% to {poss[1]*100:.0f}%)")
